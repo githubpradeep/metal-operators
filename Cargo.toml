@@ -1,0 +1,22 @@
+[package]
+name = "metal-operators"
+version = "0.1.0"
+edition = "2024"
+description = "Classical ML operators accelerated with Apple Metal GPU"
+
+[dependencies]
+metal = "0.31"
+objc = "0.2"
+anyhow = "1"
+fastrand = "2"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+linfa = "0.8.1"
+linfa-clustering = "0.8.1"
+ndarray = "0.17.2"
+rand = "0.8"
+
+[[bench]]
+name = "kmeans_benchmark"
+harness = false
