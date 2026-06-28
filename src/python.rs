@@ -1,4 +1,5 @@
 use crate::kmeans::{KMeans, KMeansConfig};
+use crate::knn::{KNN, KNNConfig};
 use crate::metal::MetalContext;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -96,4 +97,58 @@ pub fn metal_kmeans_fit(
         km.n_iter(),
         km.inertia(),
     ))
+}
+
+// ── KNN ─────────────────────────────────────────────────────────
+
+#[pyclass(name = "MetalKNeighbors")]
+pub struct PyMetalKNeighbors {
+    inner: KNN,
+}
+
+#[pymethods]
+impl PyMetalKNeighbors {
+    #[new]
+    #[pyo3(signature = (n_neighbors=5))]
+    fn new(n_neighbors: usize) -> Self {
+        let config = KNNConfig { k: n_neighbors };
+        Self { inner: KNN::new(config) }
+    }
+
+    fn fit(&mut self, data: Vec<f32>, n: usize, d: usize) -> PyResult<()> {
+        let ctx = get_context()?;
+        self.inner.fit(ctx, &data, n, d).map_err(|e| {
+            PyRuntimeError::new_err(format!("KNeighbors fit failed: {}", e))
+        })
+    }
+
+    fn kneighbors(
+        &self, queries: Vec<f32>, nq: usize,
+    ) -> PyResult<(Vec<f32>, Vec<u32>)> {
+        let ctx = get_context()?;
+        self.inner.kneighbors(ctx, &queries, nq).map_err(|e| {
+            PyRuntimeError::new_err(format!("KNeighbors kneighbors failed: {}", e))
+        })
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (corpus, n_corpus, d, queries, n_queries, n_neighbors=5))]
+pub fn metal_kneighbors(
+    corpus: Vec<f32>,
+    n_corpus: usize,
+    d: usize,
+    queries: Vec<f32>,
+    n_queries: usize,
+    n_neighbors: usize,
+) -> PyResult<(Vec<f32>, Vec<u32>)> {
+    let ctx = get_context()?;
+    let config = KNNConfig { k: n_neighbors };
+    let mut knn = KNN::new(config);
+    knn.fit(ctx, &corpus, n_corpus, d).map_err(|e| {
+        PyRuntimeError::new_err(format!("KNeighbors fit failed: {}", e))
+    })?;
+    knn.kneighbors(ctx, &queries, n_queries).map_err(|e| {
+        PyRuntimeError::new_err(format!("KNeighbors kneighbors failed: {}", e))
+    })
 }

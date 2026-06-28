@@ -28,3 +28,7 @@ rand = "0.8"
 [[bench]]
 name = "kmeans_benchmark"
 harness = false
+
+[[bench]]
+name = "knn_benchmark"
+harness = false

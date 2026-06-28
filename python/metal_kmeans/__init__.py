@@ -1,4 +1,7 @@
-"""metal_kmeans — GPU-accelerated KMeans clustering via Apple Metal.
+"""metal_kmeans — GPU-accelerated clustering and nearest-neighbour search via Apple Metal.
+
+Provides KMeans (``MetalKMeans`` / ``metal_kmeans``) and KNN (``MetalKNeighbors`` /
+``metal_kneighbors``), mirroring the interface of flashlib_.
 
 Provides both a functional API (``metal_kmeans``) and an sklearn-style
 class (``MetalKMeans``), mirroring the interface of flashlib_.
@@ -32,8 +35,10 @@ import numpy as np
 
 from ._native import MetalKMeans as _MetalKMeans
 from ._native import metal_kmeans_fit as _metal_kmeans_fit
+from ._native import MetalKNeighbors as _MetalKNeighbors
+from ._native import metal_kneighbors as _metal_kneighbors
 
-__all__ = ["MetalKMeans", "metal_kmeans"]
+__all__ = ["MetalKMeans", "metal_kmeans", "MetalKNeighbors", "metal_kneighbors"]
 
 
 class MetalKMeans:
@@ -180,3 +185,107 @@ def _to_vec_f32(data: np.ndarray | list[float]) -> list[float]:
             data = data.astype(np.float32)
         return data.ravel(order="C").tolist()
     return list(data)
+
+
+# ── KNN ─────────────────────────────────────────────────────────
+
+class MetalKNeighbors:
+    """sklearn-style K-Nearest Neighbors using GPU-accelerated Apple Metal kernels.
+
+    Parameters
+    ----------
+    n_neighbors : int, optional
+        Number of neighbors to retrieve (default 5).
+    """
+
+    def __init__(self, n_neighbors: int = 5) -> None:
+        self._n_neighbors = n_neighbors
+        self._d = 0
+        self._inner = _MetalKNeighbors(n_neighbors)
+
+    def fit(self, data: np.ndarray | list[float], n: int, d: int) -> MetalKNeighbors:
+        """Fit the corpus (database) of points.
+
+        Parameters
+        ----------
+        data : ndarray | list[float]
+            Flat row-major ``(n, d)`` points as float32.
+        n : int
+            Number of corpus points.
+        d : int
+            Number of dimensions.
+
+        Returns
+        -------
+        self
+        """
+        arr = _to_vec_f32(data)
+        self._inner.fit(arr, n, d)
+        self._d = d
+        return self
+
+    def kneighbors(
+        self, queries: np.ndarray | list[float], nq: int
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Find the K nearest neighbours of each query point.
+
+        Parameters
+        ----------
+        queries : ndarray | list[float]
+            Flat row-major ``(nq, d)`` query points as float32.
+        nq : int
+            Number of query points.
+
+        Returns
+        -------
+        distances : np.ndarray of shape (nq, n_neighbors) float32
+            Squared Euclidean distances to neighbours.
+        indices : np.ndarray of shape (nq, n_neighbors) int64
+            Indices of neighbours in the corpus.
+        """
+        arr = _to_vec_f32(queries)
+        raw_d, raw_i = self._inner.kneighbors(arr, nq)
+        k = self._n_neighbors
+        distances = np.array(raw_d, dtype=np.float32).reshape(nq, k)
+        indices = np.array(raw_i, dtype=np.intp).reshape(nq, k)
+        return distances, indices
+
+
+def metal_kneighbors(
+    corpus: np.ndarray | list[float],
+    n_corpus: int,
+    d: int,
+    queries: np.ndarray | list[float],
+    n_queries: int,
+    n_neighbors: int = 5,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Find the K nearest neighbours of each query point against a corpus.
+
+    Parameters
+    ----------
+    corpus : ndarray | list[float]
+        Flat row-major ``(n_corpus, d)`` corpus points as float32.
+    n_corpus : int
+        Number of corpus points.
+    d : int
+        Number of dimensions.
+    queries : ndarray | list[float]
+        Flat row-major ``(n_queries, d)`` query points as float32.
+    n_queries : int
+        Number of query points.
+    n_neighbors : int, optional
+        Number of neighbours (default 5).
+
+    Returns
+    -------
+    distances : np.ndarray of shape (n_queries, n_neighbors) float32
+        Squared Euclidean distances to neighbours.
+    indices : np.ndarray of shape (n_queries, n_neighbors) int64
+        Indices of neighbours in the corpus.
+    """
+    c_arr = _to_vec_f32(corpus)
+    q_arr = _to_vec_f32(queries)
+    raw_d, raw_i = _metal_kneighbors(c_arr, n_corpus, d, q_arr, n_queries, n_neighbors)
+    distances = np.array(raw_d, dtype=np.float32).reshape(n_queries, n_neighbors)
+    indices = np.array(raw_i, dtype=np.intp).reshape(n_queries, n_neighbors)
+    return distances, indices

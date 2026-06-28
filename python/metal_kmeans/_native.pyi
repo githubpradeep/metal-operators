@@ -22,3 +22,17 @@ def metal_kmeans_fit(
     tolerance: float = 1e-4,
     seed: int = 42,
 ) -> Tuple[List[int], List[float], int, float]: ...
+
+class MetalKNeighbors:
+    def __init__(self, n_neighbors: int = 5) -> None: ...
+    def fit(self, data: List[float], n: int, d: int) -> None: ...
+    def kneighbors(self, queries: List[float], nq: int) -> Tuple[List[float], List[int]]: ...
+
+def metal_kneighbors(
+    corpus: List[float],
+    n_corpus: int,
+    d: int,
+    queries: List[float],
+    n_queries: int,
+    n_neighbors: int = 5,
+) -> Tuple[List[float], List[int]]: ...
