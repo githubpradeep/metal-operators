@@ -416,3 +416,29 @@ fn test_adjusted_rand_index_random() {
     let ari = adjusted_rand_index(&labels_a, &labels_b);
     assert!(ari.abs() < 0.5, "ARI of near-random should be near 0, got {ari}");
 }
+
+/// Quick timing benchmark for fit throughput (not a correctness test).
+/// Run with `-- --nocapture` to see timing output.
+#[test]
+fn test_fit_timing() {
+    let ctx = MetalContext::new().expect("No Metal device available");
+
+    let (n, d, k) = (1_000_000usize, 32, 16);
+    let (data, centers) = generate_blobs(n, d, k, 42);
+
+    // ── just the assign kernel ──
+    use metal_operators::kmeans::{KMeansConfig, KMeans};
+    use std::time::Instant;
+
+    // Time a single assign pass using the public KMeans internals
+    let init = centers.clone();
+    let mut km = KMeans::new(KMeansConfig {
+        k, max_iterations: 1, tolerance: 0.0, seed: 42,
+        init_centroids: Some(init),
+    });
+    let start = Instant::now();
+    // We'll time iteration 0 only (first assign + centroid update)
+    km.fit(&ctx, &data, n, d).expect("fit");
+    let t1 = start.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("  N=1M_D=32_K=16 single iter: {:.2}ms", t1);
+}
