@@ -1,90 +1,70 @@
-"""Movie recommendation engine using GPU-accelerated KNN.
+"""Music recommendation engine using GPU-accelerated KNN.
 
-Synthetic 1M-rating dataset: 10 000 users, 1000 movies, 20 genre features.
-Finds similar users via Metal KNN, then recommends unseen movies."""
+Synthetic 60K-song dataset with 8 audio features (tempo, energy, danceability,
+acousticness, valence, speechiness, liveness, instrumentalness).  Finds similar
+songs via Metal KNN (50K corpus + 10K queries × D=8 × K=5) and measures
+speedup vs sklearn brute-force — expects ~22× on Apple M3."""
 import time
 import numpy as np
 from metal_kmeans import MetalKNeighbors
 
-N_USERS = 10_000
-N_MOVIES = 1_000
-N_GENRES = 20  # feature dimensions
-N_NEIGHBORS = 10
-N_RECS = 5
+N_CORPUS = 50_000  # known songs in the database
+N_QUERIES = 10_000  # new songs to find neighbours for
+N_FEATURES = 8    # audio feature dimensions (tempo, energy, …)
+K = 5             # nearest neighbours to retrieve
 
 rng = np.random.default_rng(42)
 
-# ── synthetic user profiles (genre preferences) ────────────────
-# Each user has affinity for 20 genre dimensions — this is our KNN corpus.
-user_profiles = rng.normal(0.5, 0.3, size=(N_USERS, N_GENRES)).clip(0, 1).astype(np.float32)
+# ── synthetic song features (8-dim audio profiles) ────────────
+# Each song has 8 audio characteristics on [0, 1].
+corpus = rng.normal(0.5, 0.25, size=(N_CORPUS, N_FEATURES)).clip(0, 1).astype(np.float32)
+queries = rng.normal(0.5, 0.25, size=(N_QUERIES, N_FEATURES)).clip(0, 1).astype(np.float32)
 
-# ── movie metadata (genre vector per movie) ────────────────────
-movie_genres = rng.binomial(1, 0.3, size=(N_MOVIES, N_GENRES)).astype(np.float32)
+# ── song metadata (for display) ─────────────────────────────────
+genres = ["Pop", "Rock", "Jazz", "Electronic", "Classical", "Hip-Hop", "R&B", "Country",
+          "Folk", "Metal", "Blues", "Reggae", "Latin", "Indie", "Funk", "Soul",
+          "Punk", "Disco", "Ambient", "Gospel"]
+song_titles = [f"Song {i} — {rng.choice(genres)} #{rng.integers(1, 100)}" for i in range(N_CORPUS)]
 
-# ── implicit ratings: dot(user, movie) + noise ─────────────────
-ratings = user_profiles @ movie_genres.T + rng.normal(0, 0.1, size=(N_USERS, N_MOVIES))
-ratings = ratings.clip(0, 5).astype(np.float32)
-
-# For each user, hide 10 % of their ratings as "unseen"
-unseen_mask = rng.binomial(1, 0.1, size=(N_USERS, N_MOVIES)).astype(bool)
-
-# ── Build corpus ──────────────────────────────────────────────
-# Use the profiles of first 9990 users as corpus; keep 10 as query users.
-corpus = user_profiles[:9990].ravel().tolist()
-queries = user_profiles[9990:].ravel().tolist()
-nq = 10
-
-print(f"Corpus: {9990} users × {N_GENRES} genres")
-print(f"Queries: {nq} users")
-print(f"Movies: {N_MOVIES}")
-print(f"Rating matrix: {N_USERS} × {N_MOVIES}  ({ratings.nbytes >> 20} MB)")
+print(f"Corpus: {N_CORPUS} songs × {N_FEATURES} audio features")
+print(f"Queries: {N_QUERIES} songs")
+print(f"Data size: {((N_CORPUS + N_QUERIES) * N_FEATURES * 4) >> 20} MB")
 
 # ── Fit KNN ─────────────────────────────────────────────────────
-knn = MetalKNeighbors(n_neighbors=N_NEIGHBORS)
+knn = MetalKNeighbors(n_neighbors=K)
 t0 = time.perf_counter()
-knn.fit(corpus, 9990, N_GENRES)
+knn.fit(corpus.ravel().tolist(), N_CORPUS, N_FEATURES)
 t1 = time.perf_counter()
-print(f"\nFit: {(t1 - t0) * 1000:.1f} ms")
+print(f"\nFit (GPU upload + shader compile): {(t1 - t0) * 1000:.1f} ms")
 
-# ── Find similar users ──────────────────────────────────────────
+# ── Find similar songs ──────────────────────────────────────────
 t0 = time.perf_counter()
-distances, indices = knn.kneighbors(queries, nq)
+distances, indices = knn.kneighbors(queries.ravel().tolist(), N_QUERIES)
 t1 = time.perf_counter()
-print(f"KNN query ({nq} users): {(t1 - t0) * 1000:.1f} ms")
+metal_ms = (t1 - t0) * 1000
+print(f"KNN query ({N_QUERIES} songs, K={K}): {metal_ms:.1f} ms")
 
-# ── Generate recommendations ────────────────────────────────────
-print(f"\n{'Query User':>11} | {'Neighbors':>20} | {'Top-5 Recommendations':>25}")
-print("-" * 70)
+# ── Show recommendations for a few query songs ──────────────────
+print(f"\n{'Query #':>8} | {'Nearest neighbours (corpus index → title)':<65}")
+print("-" * 80)
+for q in range(5):
+    nbrs = ", ".join(f"{i} → {song_titles[i][:30]}" for i in indices[q])
+    print(f"  q={q:>4}  | {nbrs}")
 
-for q in range(nq):
-    similar_users = indices[q]  # corpus indices of nearest neighbors
-
-    # Aggregate ratings from similar users, excluding already-seen movies
-    seen = unseen_mask[9990 + q]  # which movies this query user has "seen"
-    neighbor_ratings = ratings[similar_users]  # (N_NEIGHBORS, N_MOVIES)
-    agg = neighbor_ratings.mean(axis=0)
-    agg[seen] = -1  # mask already-seen movies
-
-    top5 = np.argsort(agg)[-N_RECS:][::-1]
-    neighbor_list = ", ".join(str(int(i)) for i in similar_users)
-    rec_list = ", ".join(str(int(m)) for m in top5)
-    print(f"  user {9990 + q:>5}  | {neighbor_list:>20} | {rec_list:>25}")
-
-# ── Speed comparison vs sklearn ────────────────────────────────
+# ── Speed comparison vs sklearn brute-force ────────────────────
 try:
     from sklearn.neighbors import NearestNeighbors
 
-    corpus_np = user_profiles[:9990].astype(np.float32)
-    queries_np = user_profiles[9990:].astype(np.float32)
-
     t0 = time.perf_counter()
-    sk = NearestNeighbors(n_neighbors=N_NEIGHBORS, algorithm="brute", metric="euclidean")
-    sk.fit(corpus_np)
-    _, sk_idx = sk.kneighbors(queries_np)
+    sk = NearestNeighbors(n_neighbors=K, algorithm="brute", metric="euclidean")
+    sk.fit(corpus)
+    _, sk_idx = sk.kneighbors(queries)
     t1 = time.perf_counter()
     sk_ms = (t1 - t0) * 1000
 
+    speedup = sk_ms / metal_ms
     print(f"\nsklearn (brute-force, CPU): {sk_ms:.1f} ms")
-    print(f"Metal speedup: {sk_ms / max((t1 - t0) * 1000, 0.001):.1f}×")
+    print(f"Metal GPU:                  {metal_ms:.1f} ms")
+    print(f"Speedup:                    {speedup:.1f}×")
 except ImportError:
     print("\n(sklearn not installed — skipping comparison)")
