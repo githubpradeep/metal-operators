@@ -376,34 +376,6 @@ kernel void kmeans_compute_min_distances(
     min_dists[idx] = min_dist;
 }
 
-// ── GPU centroid update: per-point device atomics ──
-// Each thread handles BATCH=4 points to reduce atomic contention 4×.
-kernel void kmeans_centroid_accum(
-    device const float    *points         [[buffer(0)]],
-    device const uint     *assignments    [[buffer(1)]],
-    device atomic<float>  *centroid_sums  [[buffer(2)]],
-    device atomic_int     *centroid_counts[[buffer(3)]],
-    constant uint& n  [[buffer(4)]],
-    constant uint& k  [[buffer(5)]],
-    constant uint& d  [[buffer(6)]],
-    uint gid [[thread_position_in_grid]]
-) {
-    uint base = gid * 4;
-    uint count = min(4u, n - base);
-    for (uint p = 0; p < count; p++) {
-        uint pid = base + p;
-        uint label = assignments[pid];
-        if (label >= k) label = 0;
-        uint sum_off = label * d;
-        uint pt_off  = pid * d;
-        for (uint dd = 0; dd < d; dd++) {
-            atomic_fetch_add_explicit(&centroid_sums[sum_off + dd],
-                points[pt_off + dd], memory_order_relaxed);
-        }
-        atomic_fetch_add_explicit(&centroid_counts[label], 1, memory_order_relaxed);
-    }
-}
-
 // ── GPU centroid update: tiled, no threadgroup atomics needed ──
 // Each thread handles exactly one unique dimension (dim = lid).
 // The outer loop iterates over points; each thread reads its dimension
@@ -414,10 +386,13 @@ kernel void kmeans_centroid_accum(
 // Then each thread flushes its per-label sums to global with device
 // atomics (one atomic per non-zero label per dim).
 // Requires: d <= tg_size (currently 128) and K*D + K floats in shared.
+//
+// Uses atomic_uint (CAS loop for float addition) instead of the removed
+// atomic<float> on newer Metal compilers.
 kernel void kmeans_centroid_tiled(
     device const float* points [[buffer(0)]],
     device const uint* assignments [[buffer(1)]],
-    device atomic<float>* centroid_sums [[buffer(2)]],
+    device atomic_uint* centroid_sums [[buffer(2)]],
     device atomic_int* centroid_counts [[buffer(3)]],
     constant uint& n [[buffer(4)]],
     constant uint& k [[buffer(5)]],
@@ -459,19 +434,26 @@ kernel void kmeans_centroid_tiled(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Flush per-label sums to global (device atomics)
+    // Flush per-label sums to global via CAS-based float atomics.
+    // atomic_uint stores float bits; CAS loop retries on concurrent writes.
     for (uint c = 0; c < k; c++) {
         float val = shared[c * d + dim];
-        if (val != 0.0f) {
-            atomic_fetch_add_explicit(&centroid_sums[c * d + dim], val, memory_order_relaxed);
+        if (val == 0.0f) continue;
+        device atomic_uint* target = &centroid_sums[c * d + dim];
+        uint expected = atomic_load_explicit(target, memory_order_relaxed);
+        bool done = false;
+        while (!done) {
+            float cur = as_type<float>(expected);
+            done = atomic_compare_exchange_weak_explicit(
+                target, &expected, as_type<uint>(cur + val),
+                memory_order_relaxed, memory_order_relaxed);
         }
     }
     if (dim == 0) {
         for (uint c = 0; c < k; c++) {
             float val = shared[k * d + c];
-            if (val != 0.0f) {
-                atomic_fetch_add_explicit(&centroid_counts[c], (int)val, memory_order_relaxed);
-            }
+            if (val == 0.0f) continue;
+            atomic_fetch_add_explicit(&centroid_counts[c], (int)val, memory_order_relaxed);
         }
     }
 }

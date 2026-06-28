@@ -22,7 +22,42 @@ Classical ML operators accelerated with [Apple Metal](https://developer.apple.co
 
 No Xcode required — Metal shaders are compiled at runtime from inline source (`shaders/kmeans.metal`).
 
-## Usage
+## Python Interface (PyO3)
+
+A Python package wrapping the Rust Metal backend via PyO3 provides a flashlib-style API.
+
+### Install
+
+```sh
+pip install maturin
+maturin develop   # builds and installs metal_kmeans
+```
+
+### Usage
+
+```python
+from metal_kmeans import metal_kmeans, MetalKMeans
+import numpy as np
+
+data = np.random.randn(10000, 32).astype(np.float32)
+n, d = data.shape
+
+# Functional API
+labels, centroids, n_iter, inertia = metal_kmeans(
+    data.ravel().tolist(), n, d, n_clusters=8,
+    max_iterations=20, tolerance=1e-4, seed=42
+)
+
+# sklearn-style API
+km = MetalKMeans(n_clusters=8, max_iterations=20, tolerance=1e-4)
+km.fit(data, n, d)
+print(f"inertia={km.inertia_:.4f}, n_iter={km.n_iter_}")
+labels = km.predict(new_data, new_n, d)
+```
+
+Metal shaders are compiled once (first call ~20 ms/kernel); subsequent calls reuse cached pipelines.
+
+## Usage (Rust)
 
 ```rust
 use metal_operators::kmeans::{KMeans, KMeansConfig};
@@ -53,10 +88,13 @@ let labels = km.predict(&ctx, &data, n, d)?;
 ## Tests
 
 ```sh
-cargo test
+cargo test                     # Rust: 25 integration tests
+maturin develop && python3 ... # Python: functional + sklearn-style smoke test
 ```
 
-25 tests covering D = {2, 4, 8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 256}, including correctness validation against a pure-CPU reference via adjusted Rand index, multi-simdgroup correctness, split-D correctness, empty-cluster handling, and timing instrumentation.
+Rust: 25 tests covering D = {2, 4, 8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 256}, including correctness validation against a pure-CPU reference via adjusted Rand index, multi-simdgroup correctness, split-D correctness, empty-cluster handling, and timing instrumentation.
+
+Python: smoke test covering functional API (`metal_kmeans()`), sklearn-style class (`MetalKMeans().fit()`), numpy array input, and `predict()` with fitted centroids.
 
 ## Benchmarks
 
@@ -97,11 +135,15 @@ The GPU centroid update (`kmeans_centroid_tiled`) eliminates the CPU centroid bo
 
 ```
 src/
-├── lib.rs               – crate root
+├── lib.rs               – crate root + PyO3 pymodule entry
+├── python.rs             – PyO3 bindings (MetalKMeans class, functional API)
 ├── metal/mod.rs          – MetalContext: device, queue, buffer helpers
 └── kmeans/mod.rs         – KMeans struct, assign kernel picker, centroid dispatch
+python/metal_kmeans/
+├── __init__.py           – flashlib-style Python API (MetalKMeans, metal_kmeans)
+└── _native.pyi           – type stubs for the Rust PyO3 module
 shaders/
-└── kmeans.metal          – 7 Metal kernels (3 assign + 1 init + 1 centroid ref + 2 centroid)
+└── kmeans.metal          – Metal kernels (3 assign + 1 init + 1 centroid tiled)
 benches/
 ├── kmeans_benchmark.rs   – Criterion benchmarks vs BLAS & sklearn
 └── sklearn_kmeans.py     – Python subprocess for sklearn timing
@@ -110,6 +152,7 @@ reference/
 └── flashlib/             – Python Triton/CuteDSL reference (subtree, not tracked)
 docs/
 └── algorithm.md          – Detailed algorithm and optimization documentation
+pyproject.toml            – maturin build config for the Python package
 ```
 
 ## Kernel dispatch

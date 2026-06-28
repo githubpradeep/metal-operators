@@ -4,11 +4,19 @@ version = "0.1.0"
 edition = "2024"
 description = "Classical ML operators accelerated with Apple Metal GPU"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+python = ["pyo3/extension-module"]
+
 [dependencies]
 metal = "0.31"
 objc = "0.2"
 anyhow = "1"
 fastrand = "2"
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
