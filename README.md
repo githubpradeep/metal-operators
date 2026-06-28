@@ -4,10 +4,12 @@ Classical ML operators accelerated with [Apple Metal](https://developer.apple.co
 
 ## What's here
 
-- **KMeans fit & predict** — GPU-accelerated assignment kernels + multi-iteration Lloyd's algorithm
-  - **Naive** — per-point loop over centroids in device memory (D < 8 or D % 8 != 0)
-  - **Tiled** — cooperatively loads centroid tiles into threadgroup memory
-  - **Simdgroup** — 8×8 dot-product tiles via `simdgroup_load`/`multiply`/`store` (D % 8 == 0, shared memory ≤ 32 KB)
+- **KMeans fit & predict** — GPU-accelerated Lloyd's algorithm with 5 kernel variants
+  - **Naive assign** — per-point loop over centroids in device memory (fallback for small D or non-multiple-of-8)
+  - **Simdgroup assign (CTILE=8)** — 8×8 dot-product tiles via `simdgroup_load`/`multiply`/`store` (D % 8 == 0, shared ≤ 32 KB)
+  - **Simdgroup assign (CTILE=16)** — 16×8 tiles for K ≤ 16; single centroid tile eliminates loop overhead
+  - **Split-D assign** — outer K-loop, inner D-loop tiled by BD=32; cross accumulator in registers across D chunks (any D, no D % 8 requirement)
+  - **Tiled centroid update** — GPU-accelerated per-cluster accumulation via `ceil(N/128)` threadgroups, each handling one unique dimension (no threadgroup atomics needed); replaces the CPU centroid bottleneck
 - **k-means++** initialization on GPU
 - **CPU reference** — BLAS-accelerated via Accelerate `sgemm_` for benchmarking
 - **sklearn comparison** — times `KMeans` via Python subprocess for validation
@@ -54,7 +56,7 @@ let labels = km.predict(&ctx, &data, n, d)?;
 cargo test
 ```
 
-19 tests covering D = {8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 256}, including correctness validation against a pure-CPU reference via adjusted Rand index.
+25 tests covering D = {2, 4, 8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 256}, including correctness validation against a pure-CPU reference via adjusted Rand index, multi-simdgroup correctness, split-D correctness, empty-cluster handling, and timing instrumentation.
 
 ## Benchmarks
 
@@ -84,12 +86,12 @@ Fit benchmarks run full Lloyd iterations (Metal vs BLAS-CPU vs sklearn).
 |---|---|---|---|---|---|---|
 | 100K | 32 | 256 | 32 ms | 82 ms | 33 ms | **2.6×** |
 | 1M | 32 | 64 | 128 ms | 211 ms | 140 ms | **1.65×** |
-| 1M | 32 | 16 | 101 ms | 108 ms | 99 ms | **1.1×** |
-| 3M | 32 | 16 | 261 ms | 387 ms | — | **1.5×** |
+| 1M | 32 | 16 | 36 ms | 108 ms | 99 ms | **3.0×** |
+| 3M | 32 | 16 | 98 ms | 387 ms | — | **3.9×** |
 | 200K | 64 | 512 | 306 ms | 348 ms | 118 ms | **1.1×** |
 | 50K | 2 | 8 | 1.2 ms | 2.5 ms | 3.7 ms | **2.0×** |
 
-Low-dimensional (2D) shapes show the largest gains (up to 23×). High-dimensional (128D) loses — the simdgroup 8×8 tile size doesn't effectively engage the GPU's matrix units.
+The GPU centroid update (`kmeans_centroid_tiled`) eliminates the CPU centroid bottleneck (12 ms → <1 ms warm for N=1M×D=32×K=16), reducing fit time by ~3× for typical shapes. Low-dimensional (2D) shapes show the largest gains from the assign kernel (up to 23×). High-dimensional (128D) loses — the simdgroup 8×8 tile size doesn't effectively engage the GPU's matrix units.
 
 ## Architecture
 
@@ -97,16 +99,36 @@ Low-dimensional (2D) shapes show the largest gains (up to 23×). High-dimensiona
 src/
 ├── lib.rs               – crate root
 ├── metal/mod.rs          – MetalContext: device, queue, buffer helpers
-└── kmeans/mod.rs         – KMeans struct, assign kernel dispatch, centroid update
+└── kmeans/mod.rs         – KMeans struct, assign kernel picker, centroid dispatch
 shaders/
-└── kmeans.metal          – Metal kernels (assign, simdgroup assign, min-distances)
+└── kmeans.metal          – 7 Metal kernels (3 assign + 1 init + 1 centroid ref + 2 centroid)
 benches/
 ├── kmeans_benchmark.rs   – Criterion benchmarks vs BLAS & sklearn
 └── sklearn_kmeans.py     – Python subprocess for sklearn timing
-tests/                    – 19 integration tests
+tests/                    – 25 integration tests
 reference/
 └── flashlib/             – Python Triton/CuteDSL reference (subtree, not tracked)
+docs/
+└── algorithm.md          – Detailed algorithm and optimization documentation
 ```
+
+## Kernel dispatch
+
+The assign kernel picker (`pick_assign_kernel`) selects the best kernel at runtime:
+
+| Condition | Kernel | Threads/TG | Points/TG |
+|---|---|---|---|
+| D < 8 \|\| D % 8 != 0 | `kmeans_assign` (Naive) | 256 | 1 |
+| K ≤ 16, shared memory fits | `kmeans_assign_simdgroup_c16` (CTILE=16) | 128 | 8 |
+| Shared memory fits | `kmeans_assign_simdgroup` (CTILE=8) | 128 | 8 |
+| D > 0, shared memory exceeded | `kmeans_assign_splitd` | 128 | 128 |
+
+Centroid update dispatch:
+
+| Condition | Method |
+|---|---|
+| (K × D + K) × 4 ≤ 32 KB | `kmeans_centroid_tiled` (GPU) |
+| Shared memory exceeded | CPU fallback (`compute_centroids`) |
 
 ## Notes
 
