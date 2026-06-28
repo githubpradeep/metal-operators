@@ -178,9 +178,9 @@ for i in 0..n {
 
 **Why slow**: Each iteration reads one `u32` (from labels) and `D` floats (from data). For N=1M, D=32: 33M reads from main memory. CPU memory bandwidth (~40 GB/s on M3) is the bottleneck.
 
-### 3.2 Naive GPU atomics (too contended)
+### 3.2 Naive GPU atomics (too contended) [dead code, reference only]
 
-**`kmeans_centroid_accum`** — each thread handles 4 points (BATCH=4), atomically adding to device global sums.
+**`kmeans_centroid_accum`** (removed from shaders) — each thread handled 4 points (BATCH=4), atomically adding to device global sums.
 
 ```
 Threads: N/4
@@ -188,11 +188,11 @@ Per thread: 4 points × D float atomics + 1 int atomic
 Total atomics: N·D float + N int = 32M + 1M = 33M atomics
 ```
 
-**Problem**: Contention. All N/K ≈ 62,500 threads target each of the K·D = 512 sum locations and K = 16 count locations. The GPU serializes these atomics at the memory controller. Result: **~600 ms** — 50× slower than CPU.
+**Problem**: Contention. All N/K ≈ 62,500 threads targeted each of the K·D = 512 sum locations and K = 16 count locations. The GPU serialized these atomics at the memory controller. Result: **~600 ms** — 50× slower than CPU.
 
-### 3.3 Per-cluster scatter+reduce (underutilized)
+### 3.3 Per-cluster scatter+reduce (underutilized) [dead code, reference only]
 
-**`kmeans_scatter` + `kmeans_centroid_sorted`** — two-pass approach inspired by flash-kmeans:
+**`kmeans_scatter` + `kmeans_centroid_sorted`** (removed from shaders) — two-pass approach inspired by flash-kmeans:
 
 1. **Scatter**: Each point atomically writes its index to a per-cluster contiguous range in `sorted_ids`. Uses `atomic_fetch_add` on per-label counters. ~1M uint32 atomics on K bins.
 2. **Per-cluster reduce**: One threadgroup per cluster. Each thread handles one dimension, loops over all points in the cluster, accumulates sums, writes final centroid.
@@ -226,8 +226,8 @@ Shared:      K·D + K floats (max ~32 KB)
 3. **Barrier** (after all points processed)
 
 4. **Flush to global**: For each label `c`:
-   - Thread `dim` reads `shared[c·D + dim]`. If non-zero, device atomic add to `centroid_sums[c·D + dim]`.
-   - Thread 0 reads `shared[K·D + c]`. If non-zero, device atomic add to `centroid_counts[c]`.
+   - Thread `dim` reads `shared[c·D + dim]`. If non-zero, CAS-loop atomic add to `centroid_sums[c·D + dim]` via `atomic_uint` (float bits reinterpretted through `as_type`).
+   - Thread 0 reads `shared[K·D + c]`. If non-zero, `atomic_fetch_add` to `centroid_counts[c]`.
 
 **Why no threadgroup atomics needed**: Each thread has a unique `dim = lid` (for `lid < D`). When multiple threads write to `shared[label·D + dim]`, the `dim` offset is different for each thread, so the addresses don't overlap. Thread 0 is the sole writer to `shared[K·D + label]` (counts). The outer `for i in 0..count` loop processes points sequentially, so within a single thread, writes to the same address happen in order (no race).
 
@@ -237,6 +237,7 @@ Shared:      K·D + K floats (max ~32 KB)
 |---|---|---|
 | Total device atomics | 33M (32M float + 1M int) | ≤ K·D·ceil(N/PTILE) = 512 × 7812 = ~4M |
 | Contenders per location | N/K = 62,500 | ceil(N/PTILE) = 7,812 |
+| Float atomic mechanism | `device atomic<float>` (removed in macOS 26) | `device atomic_uint` + CAS loop via `atomic_compare_exchange_weak` |
 | Atomic traffic reduction | — | ~8× |
 
 **Memory access pattern** (coalescing):
@@ -355,6 +356,26 @@ The Metal specification states `simdgroup_multiply(acc, A, B)` computes `acc = A
 
 The Metal specification describes `simdgroup_matrix` as column-first (`pointer[row + i][col + j]`), but the implementation uses row-first addressing (`pointer[(row+i)·stride + (col+j)]`). This implementation uses row-first (verified empirically on Apple M3).
 
-### Non-bug: `atomic_fetch_add` on `threadgroup` address space
+### Bug 4: `device atomic<float>` removed in macOS 26
 
-Metal does not support `threadgroup atomic<float>` — the `atomic_fetch_add_explicit` overload for `float` only accepts `device` address space. The tiled centroid kernel works around this by assigning unique dimensions to threads, eliminating the need for threadgroup atomics.
+Starting with macOS 26, the Metal compiler no longer supports `device atomic<float>` — the `atomic_fetch_add_explicit` overload for `float` was removed. The compiler suggests `_atomic` (an internal type), but no public replacement exists.
+
+**Workaround**: Use `device atomic_uint` instead and implement float addition via a CAS (compare-and-swap) loop:
+
+```metal
+device atomic_uint* target = &centroid_sums[idx];
+uint expected = atomic_load_explicit(target, memory_order_relaxed);
+bool done = false;
+while (!done) {
+    float cur = as_type<float>(expected);
+    done = atomic_compare_exchange_weak_explicit(
+        target, &expected, as_type<uint>(cur + val),
+        memory_order_relaxed, memory_order_relaxed);
+}
+```
+
+This is used in `kmeans_centroid_tiled`. The `atomic_int` overload for integer counts is unaffected.
+
+### Non-bug: `threadgroup atomic<float>` unavailable
+
+Metal has never supported `threadgroup atomic<float>` — the `atomic_fetch_add_explicit` overload for `float` only accepts `device` address space. The tiled centroid kernel works around this by assigning unique dimensions to threads, eliminating the need for threadgroup atomics.
