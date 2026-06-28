@@ -165,6 +165,115 @@ Without `python`, the crate builds as a pure Rust library with no Python depende
 
 ---
 
+## `knn::KNNConfig`
+
+Configuration for K-Nearest Neighbors search.
+
+```rust
+pub struct KNNConfig {
+    pub k: usize,  // number of neighbours
+}
+```
+
+Implements `Default`:
+
+| Field | Default |
+|---|---|
+| `k` | `5` |
+
+---
+
+## `knn::KNN`
+
+The main KNN struct. All fields are private.
+
+```rust
+pub struct KNN { /* private fields */ }
+```
+
+### `KNN::new(config: KNNConfig) -> Self`
+
+Construct a new KNN searcher. No GPU work is performed until `fit` is called.
+
+### `fit(&mut self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<()>`
+
+Store the corpus (database) on the GPU and select the optimal kernel variant.
+
+| Param | Type | Description |
+|---|---|---|
+| `ctx` | `&MetalContext` | GPU handle (shared across calls). |
+| `data` | `&[f32]` | Flat row-major corpus: `data[i * d + j]` = point `i`, dim `j`. Length `n * d`. |
+| `n` | `usize` | Number of corpus points. |
+| `d` | `usize` | Number of dimensions. |
+
+**Validates**:
+- `d > 0`, `n > 0`
+- `data.len() == n * d`
+
+**Kernel selection** (based on `d` and `k`):
+
+| Condition | Kernel | Description |
+|---|---|---|
+| `d < 32` and `k ≤ 64` | `knn_assign_dense` | Direct device reads, register-resident query, per-thread heap |
+| `d ≥ 8`, `d % 8 == 0`, `k ≤ 64` | `knn_assign_splitm` | Simdgroup matmul (BN=16, BM=8), shared memory tiling |
+| Otherwise | `knn_assign_naive` | Single-thread fallback |
+
+The corpus and its pre-computed squared norms are uploaded to GPU memory during
+`fit` and stay resident for all subsequent `kneighbors` calls.
+
+### `kneighbors(&self, ctx: &MetalContext, queries: &[f32], nq: usize) -> anyhow::Result<(Vec<f32>, Vec<u32>)>`
+
+Find the `k` nearest neighbours of each query point.
+
+| Param | Type | Description |
+|---|---|---|
+| `ctx` | `&MetalContext` | GPU handle (shared across calls). |
+| `queries` | `&[f32]` | Flat row-major queries, length `nq * d`. |
+| `nq` | `usize` | Number of query points. |
+
+Returns `(distances, indices)`:
+
+| Return | Type | Length | Description |
+|---|---|---|---|
+| `distances` | `Vec<f32>` | `nq * k` | Squared Euclidean distances, row-major, sorted ascending per query. |
+| `indices` | `Vec<u32>` | `nq * k` | Corpus indices of neighbours (0..n-1). |
+
+**Internal flow**:
+1. Compute query squared norms on CPU (`compute_norms`).
+2. Reuse cached scratch buffers for query data, norms, and output arrays.
+3. Dispatch the selected GPU kernel (single threadgroup grid, no M-split).
+4. Read GPU output back to CPU.
+5. Add query norms to recover true squared-L2 from the shift-invariant score.
+
+**Buffer reuse**: query, norms, and output Metal buffers are cached across calls.
+Only a `copy_nonoverlapping` CPU→GPU upload of query data occurs on each
+invocation — no `new_buffer` allocation in the hot path.
+
+### Example
+
+```rust ignore
+use metal_operators::knn::{KNN, KNNConfig};
+use metal_operators::metal::MetalContext;
+
+fn run() -> anyhow::Result<()> {
+    let ctx = MetalContext::new()?;
+    let (nc, nq, d, k) = (10_000, 1_000, 32, 5);
+
+    let corpus = vec![0.0f32; nc * d];
+    let queries = vec![0.0f32; nq * d];
+
+    let mut knn = KNN::new(KNNConfig { k });
+    knn.fit(&ctx, &corpus, nc, d)?;
+    let (distances, indices) = knn.kneighbors(&ctx, &queries, nq)?;
+
+    println!("distances: {:?}", &distances[..k]);
+    println!("indices:   {:?}", &indices[..k]);
+    Ok(())
+}
+```
+
+---
+
 ## Complete example
 
 ```rust ignore

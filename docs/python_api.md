@@ -1,6 +1,7 @@
 # Python API Reference
 
-The `metal_kmeans` package provides GPU-accelerated KMeans clustering via Apple Metal.
+The `metal_kmeans` package provides GPU-accelerated KMeans clustering and
+K-Nearest Neighbour search via Apple Metal.
 
 ```
 pip install maturin
@@ -141,3 +142,122 @@ All GPU errors surface as Python `RuntimeError`:
 - **`MetalContext` is shared** across all calls via a process-global `OnceLock`. First call initialises it; later calls are zero-overhead.
 - **Kernel picker** selects Naive / Simdgroup / SimdgroupC16 / Split-D at runtime based on `n`, `d`, `k`, and shared-memory budget.
 - **Centroid update** runs on GPU when `(K * d + K) * 4 <= 32768` bytes; otherwise falls back to CPU.
+
+---
+
+## `metal_kneighbors` (functional API)
+
+```python
+metal_kneighbors(corpus, n_corpus, d, queries, n_queries, n_neighbors=5)
+```
+
+### Parameters
+
+| Name | Type | Description |
+|---|---|---|
+| `corpus` | `np.ndarray[float32]` or `list[float]` | Flat row-major corpus points: `corpus[i * d + j]` = point `i`, dim `j`. Shape `(n_corpus * d,)`. |
+| `n_corpus` | `int` | Number of corpus points. |
+| `d` | `int` | Number of dimensions. |
+| `queries` | `np.ndarray[float32]` or `list[float]` | Flat row-major query points, shape `(n_queries * d,)`. |
+| `n_queries` | `int` | Number of query points. |
+| `n_neighbors` | `int` | Number of nearest neighbours to retrieve (default 5). |
+
+### Returns
+
+| Name | Type | Shape | Description |
+|---|---|---|---|
+| `distances` | `np.ndarray[float32]` | `(n_queries, n_neighbors)` | Squared Euclidean distances to neighbours, sorted ascending. |
+| `indices` | `np.ndarray[intp]` | `(n_queries, n_neighbors)` | Indices of neighbours in the corpus (0..n_corpus-1). |
+
+### Errors
+
+Raises `RuntimeError` if Metal is unavailable, shader compilation fails, or
+input parameters are invalid (e.g. data length mismatch).
+
+---
+
+## `MetalKNeighbors` (sklearn-style class)
+
+```python
+knn = MetalKNeighbors(n_neighbors=5)
+knn.fit(data, n, d)
+knn.kneighbors(queries, nq)
+```
+
+### Constructor
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `n_neighbors` | `int` | `5` | Number of neighbours to retrieve. |
+
+### Methods
+
+#### `fit(data, n, d) -> MetalKNeighbors`
+
+Store the corpus (database) of points on the GPU. Returns `self` for chaining.
+
+| Param | Type | Description |
+|---|---|---|
+| `data` | `np.ndarray[float32]` or `list[float]` | Flat row-major corpus points. |
+| `n` | `int` | Number of corpus points. |
+| `d` | `int` | Number of dimensions. |
+
+The corpus and its pre-computed squared norms are cached on the GPU for
+subsequent `kneighbors` calls.
+
+#### `kneighbors(queries, nq) -> Tuple[np.ndarray, np.ndarray]`
+
+Find the `n_neighbors` nearest neighbours of each query point.
+
+| Param | Type | Description |
+|---|---|---|
+| `queries` | `np.ndarray[float32]` or `list[float]` | Flat row-major query points. |
+| `nq` | `int` | Number of query points. |
+
+Returns `(distances, indices)` — see the functional API above for shapes.
+
+**Buffer reuse**: query, norms, and output buffers are cached across calls.
+Only a lightweight CPU→GPU copy of query data occurs on each invocation.
+
+### Example
+
+```python
+from metal_kmeans import MetalKNeighbors
+import numpy as np
+
+corpus = np.random.randn(5000, 32).astype(np.float32)
+queries = np.random.randn(100, 32).astype(np.float32)
+
+knn = MetalKNeighbors(n_neighbors=10)
+knn.fit(corpus, *corpus.shape)
+distances, indices = knn.kneighbors(queries, *queries.shape)
+print(distances.shape)  # (100, 10)
+print(indices[0])       # indices of 10 nearest neighbours of query 0
+```
+
+---
+
+## KNN kernel dispatch
+
+| Condition | Kernel | Description |
+|---|---|---|
+| D < 32, K ≤ 64 | `knn_assign_dense` | Direct device reads, register-resident query, per-thread heap |
+| D ≥ 8, D % 8 == 0, K ≤ 64 | `knn_assign_splitm` | Simdgroup matmul (BN=16, BM=8), shared memory tiling |
+| Otherwise | `knn_assign_naive` | Single-thread fallback |
+
+No M-split is used (counterproductive on Apple GPUs due to threadgroup dispatch
+overhead). Each threadgroup processes the entire corpus.
+
+All kernels compute a shift-invariant score (`c·c − 2·q·c`); the true squared-L2
+distance is recovered by adding `q·q` in the CPU post-process step — this avoids
+loading query norms in the inner loop.
+
+## KNN performance notes
+
+- **Buffer reuse**: the first call allocates GPU scratch buffers; subsequent calls
+  reuse them (only a CPU→GPU copy of query data occurs). This eliminates the
+  per-call `new_buffer` overhead that was the dominant bottleneck.
+- **Cold start**: first kernel compile ~20 ms (cached by `fit`).
+- **Kernel execution**: typically 7–70 ms depending on shape (see README benchmarks).
+- **True L2 distances**: the returned distances are always exact squared-Euclidean,
+  not the shift-invariant intermediate scores.
