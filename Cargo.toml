@@ -32,3 +32,7 @@ harness = false
 [[bench]]
 name = "knn_benchmark"
 harness = false
+
+[[bench]]
+name = "pca_benchmark"
+harness = false

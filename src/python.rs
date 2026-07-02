@@ -1,6 +1,7 @@
 use crate::kmeans::{KMeans, KMeansConfig};
 use crate::knn::{KNN, KNNConfig};
 use crate::metal::MetalContext;
+use crate::pca::{PCA, PCAConfig};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
@@ -151,4 +152,92 @@ pub fn metal_kneighbors(
     knn.kneighbors(ctx, &queries, n_queries).map_err(|e| {
         PyRuntimeError::new_err(format!("KNeighbors kneighbors failed: {}", e))
     })
+}
+
+// ── PCA ─────────────────────────────────────────────────────────
+
+#[pyclass(name = "MetalPCA")]
+pub struct PyMetalPCA {
+    inner: PCA,
+}
+
+#[pymethods]
+impl PyMetalPCA {
+    #[new]
+    fn new(n_components: usize) -> Self {
+        let config = PCAConfig { n_components };
+        Self { inner: PCA::new(config) }
+    }
+
+    fn fit(&mut self, data: Vec<f32>, n: usize, d: usize) -> PyResult<()> {
+        let ctx = get_context()?;
+        self.inner.fit(ctx, &data, n, d).map_err(|e| {
+            PyRuntimeError::new_err(format!("PCA fit failed: {}", e))
+        })
+    }
+
+    fn transform(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner.transform(ctx, &data, n, d).map_err(|e| {
+            PyRuntimeError::new_err(format!("PCA transform failed: {}", e))
+        })
+    }
+
+    fn fit_transform(&mut self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner.fit_transform(ctx, &data, n, d).map_err(|e| {
+            PyRuntimeError::new_err(format!("PCA fit_transform failed: {}", e))
+        })
+    }
+
+    #[getter]
+    fn components(&self) -> Vec<f32> {
+        self.inner.components().to_vec()
+    }
+
+    #[getter]
+    fn explained_variance(&self) -> Vec<f32> {
+        self.inner.explained_variance().to_vec()
+    }
+
+    #[getter]
+    fn explained_variance_ratio(&self) -> Vec<f32> {
+        self.inner.explained_variance_ratio().to_vec()
+    }
+
+    #[getter]
+    fn singular_values(&self) -> Vec<f32> {
+        self.inner.singular_values().to_vec()
+    }
+
+    #[getter]
+    fn mean(&self) -> Vec<f32> {
+        self.inner.mean().to_vec()
+    }
+
+    #[getter]
+    fn noise_variance(&self) -> f32 {
+        self.inner.noise_variance()
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, n, d, n_components))]
+pub fn metal_pca_fit(
+    data: Vec<f32>,
+    n: usize,
+    d: usize,
+    n_components: usize,
+) -> PyResult<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+    let ctx = get_context()?;
+    let config = PCAConfig { n_components };
+    let mut pca = PCA::new(config);
+    pca.fit(ctx, &data, n, d).map_err(|e| {
+        PyRuntimeError::new_err(format!("PCA fit failed: {}", e))
+    })?;
+    Ok((
+        pca.components().to_vec(),
+        pca.explained_variance().to_vec(),
+        pca.explained_variance_ratio().to_vec(),
+    ))
 }

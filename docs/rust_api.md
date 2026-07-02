@@ -155,6 +155,110 @@ Returns a `Vec<usize>` of length `n` with cluster labels 0..k-1.
 
 ---
 
+## `pca::PCAConfig`
+
+Configuration for PCA.
+
+```rust
+pub struct PCAConfig {
+    pub n_components: usize,
+}
+```
+
+Implements `Default`:
+
+| Field | Default |
+|---|---|
+| `n_components` | `2` |
+
+---
+
+## `pca::PCA`
+
+The main PCA solver struct.
+
+```rust
+pub struct PCA { /* private fields */ }
+```
+
+### `PCA::new(config: PCAConfig) -> Self`
+
+Construct a new PCA solver. No GPU work is performed until `fit` is called.
+
+### `fit(&mut self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<()>`
+
+Fit PCA on the GPU.
+
+| Param | Type | Description |
+|---|---|---|
+| `ctx` | `&MetalContext` | GPU handle (shared across calls). |
+| `data` | `&[f32]` | Flat row-major data: `data[i * d + j]` = sample `i`, dim `j`. Length `n * d`. |
+| `n` | `usize` | Number of samples. |
+| `d` | `usize` | Number of features. |
+
+**Algorithm**:
+1. GPU pipeline (single command buffer): `mean → center → transpose → matmul`.
+2. Read Gram matrix and means back to CPU.
+3. CPU eigendecomposition — Jacobi (≤ 128) or Accelerate `ssyevd_` (> 128).
+4. Sort eigenvalues descending, extract top-K components.
+5. If Gram path (N < D), recover D-dim eigenvectors via `X̂ᵀ @ U · diag(1/√(Nλ))`.
+
+### `transform(&self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<Vec<f32>>`
+
+Project data onto principal components (GPU).
+
+| Param | Type | Description |
+|---|---|---|
+| `ctx` | `&MetalContext` | GPU handle. |
+| `data` | `&[f32]` | Flat row-major data, length `n * d`. |
+| `n` | `usize` | Number of samples. |
+| `d` | `usize` | Number of features. |
+
+Returns flat `Vec<f32>` of length `n * k` where `k` = requested components.
+
+### `fit_transform(&mut self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<Vec<f32>>`
+
+Fit + transform in one call.
+
+### Accessors
+
+| Method | Returns | Description |
+|---|---|---|
+| `components(&self) -> &[f32]` | `&[f32]` | Flat principal components, length `k * d`, row-major. |
+| `explained_variance(&self) -> &[f32]` | `&[f32]` | Variance of each component (descending), length `k`. |
+| `explained_variance_ratio(&self) -> &[f32]` | `&[f32]` | Normalized variance (sums to ≤ 1), length `k`. |
+| `mean(&self) -> &[f32]` | `&[f32]` | Per-feature mean, length `d`. |
+| `singular_values(&self) -> &[f32]` | `&[f32]` | Singular values `sqrt(N · λ)`, length `k`. |
+| `noise_variance(&self) -> f32` | `f32` | Average variance of discarded components. |
+| `n_features(&self) -> usize` | `usize` | Feature dimension `d`. |
+| `n_samples(&self) -> usize` | `usize` | Sample count `n`. |
+
+### Example
+
+```rust ignore
+use metal_operators::pca::{PCA, PCAConfig};
+use metal_operators::metal::MetalContext;
+
+fn run() -> anyhow::Result<()> {
+    let ctx = MetalContext::new()?;
+
+    let (n, d, k) = (1000usize, 50, 5);
+    let data = vec![0.0f32; n * d];  // your data here
+
+    let mut pca = PCA::new(PCAConfig { n_components: k });
+    pca.fit(&ctx, &data, n, d)?;
+
+    println!("components: {:?}", &pca.components()[..k * d.min(4)]);
+    println!("explained variance: {:?}", &pca.explained_variance()[..k.min(5)]);
+
+    let transformed = pca.transform(&ctx, &data, n, d)?;
+    println!("transformed: {} × {}", n, k);
+    Ok(())
+}
+```
+
+---
+
 ## Feature flags
 
 | Feature | Enables | Default |

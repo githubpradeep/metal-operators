@@ -3,9 +3,9 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "metal_kmeans"
-version = "0.1.0"
-description = "GPU-accelerated KMeans clustering using Apple Metal, via Rust + PyO3"
+name = "metal-operators"
+version = "0.2.0"
+description = "GPU-accelerated ML operators (KMeans, KNN, PCA) using Apple Metal, via Rust + PyO3"
 requires-python = ">=3.9"
 dependencies = [
     "numpy",

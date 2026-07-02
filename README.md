@@ -1,6 +1,6 @@
-# metal-kmeans
+# metal-operators
 
-GPU-accelerated **KMeans clustering** and **K-Nearest Neighbors** via Apple Metal.
+GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, and **PCA** via Apple Metal.
 
 **KMeans** uses 5 kernel variants (simdgroup, split-D, tiled centroid) to run Lloyd's
 algorithm entirely on GPU — no CPU readback inside the loop.
@@ -54,6 +54,34 @@ python3 examples/example.py                # KMeans: smoke test + benchmark
 python3 examples/knn_example.py            # KNN: benchmark across shapes
 python3 examples/movie_recommendation.py   # KNN: movie recommendation engine
 python3 examples/customer_segmentation.py  # KMeans: 500K customer segmentation
+python3 examples/pca_eigenfaces.py         # PCA: eigenfaces reconstruction
+```
+
+### PCA
+
+```python
+from metal_pca import MetalPCA
+import numpy as np
+
+# Synthetic data with known low-rank structure
+n, d, k = 1000, 50, 5
+rng = np.random.RandomState(42)
+X = rng.randn(n, k) @ rng.randn(k, d) + 0.1 * rng.randn(n, d)
+X = X.astype(np.float32)
+
+# sklearn-style API
+pca = MetalPCA(n_components=k)
+pca.fit(X)
+
+# Access results
+components = pca.components_           # (k, d) principal components
+ev = pca.explained_variance_           # (k,) eigenvalues
+ev_ratio = pca.explained_variance_ratio_  # (k,) normalized
+transformed = pca.transform(X)         # (n, k) projection
+
+# Reconstruction
+X_recon = transformed @ components
+recon_error = np.mean((X - X_recon)**2)
 ```
 
 ## Requirements
@@ -172,23 +200,37 @@ knn.fit(&ctx, &corpus, nc, d)?;
 let (dists, idxs) = knn.kneighbors(&ctx, &queries, nq)?;
 ```
 
+```rust
+use metal_operators::pca::{PCA, PCAConfig};
+
+let ctx = MetalContext::new()?;
+let mut pca = PCA::new(PCAConfig { n_components: 5 });
+pca.fit(&ctx, &data, n, d)?;
+println!("explained variance: {:?}", &pca.explained_variance());
+let transformed = pca.transform(&ctx, &data, n, d)?;
+```
+
 ## Tests
 
 ```sh
-cargo test                     # Rust: 25+ integration tests
+cargo test                     # Rust: 30+ integration tests
 python3 examples/example.py    # Python KMeans smoke test
 python3 examples/knn_example.py # Python KNN smoke test
+python3 examples/pca_eigenfaces.py # Python PCA eigenfaces example
 ```
 
 KMeans test matrix: D = {2, 4, 8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 256}, including adjusted Rand index validation against CPU reference, multi-simdgroup correctness, split-D, empty-cluster handling, and timing.
 
 KNN test matrix: D = {3, 8, 16, 32}, K = {1, 3, 5, 10}, covering Dense, Splitm, and Naive kernel paths plus deterministic reproducibility.
 
+PCA test matrix: 12 tests covering cov path (N≥D), Gram path (N<D), explained variance ordering, orthonormal components, reconstruction accuracy, single-component edge case, and transform output shape.
+
 ## Benchmarks
 
 ```sh
 cargo bench --bench kmeans_benchmark
 cargo bench --bench kmeans_benchmark -- "fit.*1M_D=32"
+cargo bench --bench pca_benchmark          # PCA: tall/square/wide regimes
 ```
 
 Results (Apple M3):
@@ -215,6 +257,27 @@ Results (Apple M3):
 
 The GPU centroid update (`kmeans_centroid_tiled`) replaces the CPU bottleneck (12 ms → <1 ms warm for 1M×32×16), yielding ~3× fit speedup. 2D shapes show the largest gains from assign (23×). High-D (128D) loses — 8×8 tile size doesn't fill the GPU's matrix units.
 
+### PCA fit benchmarks (Apple M3)
+
+PCA uses: GPU for mean → center → transpose → matmul (chained, single command buffer), CPU for eigendecomposition (Jacobi ≤ 128, Accelerate LAPACK > 128).
+
+| shape | metal(ms) | sklearn(ms) | speedup |
+|---|---|---|---|
+| tall N=100K D=128 K=32 | 65 | 49 | 0.7× |
+| sq N=1K D=512 K=32 | **22** | 55 | **2.5×** |
+| sq N=5K D=1K K=32 | 144 | 184 | 1.3× |
+| wide N=500 D=4K K=32 | 94 | 85 | 0.9× |
+| wide N=500 D=8K K=32 | **176** | 219 | **1.2×** |
+| wide N=500 D=16K K=32 | 334 | 327 | 1.0× |
+
+GPU matches or beats sklearn in square and wide regimes; tall regimes are close (0.7×) due to GPU command buffer overhead (~2 ms) dominating a cheap 128×128 Gram solve. On medium-square shapes, GPU is **2.5× faster** than sklearn by avoiding SVD overhead on the Gram path.
+
+### PCA kernel dispatch
+
+- **Cov path** (N ≥ D): `centered^T @ centered / N` → D×D Gram → CPU eigh
+- **Gram path** (N < D): `centered @ centered^T / N` → N×N Gram → CPU eigh + eigenvector recovery (`X^T @ U · diag(1/√(Nλ))`)
+- Hybrid eigh: Jacobi (15 sweeps) for gram_dim ≤ 128, Accelerate `ssyevd_` for larger
+
 ## Kernel dispatch
 
 | Condition | Kernel | Threads/TG | Points/TG |
@@ -231,21 +294,24 @@ Centroid update: GPU (`kmeans_centroid_tiled`) when `(K×D+K)×4 ≤ 32 KB`, els
 ```
 src/
 ├── lib.rs               – crate root + PyO3 pymodule entry
-├── python.rs             – PyO3 bindings (MetalKMeans, MetalKNeighbors, functions)
+├── python.rs             – PyO3 bindings (KMeans, KNN, PCA)
 ├── metal/mod.rs          – MetalContext: device, queue, buffer helpers
 ├── kmeans/mod.rs         – KMeans, assign kernel picker, centroid dispatch
-└── knn/mod.rs            – KNN, 3 kernel variants, buffer reuse
-python/metal_kmeans/
-├── __init__.py           – flashlib-style Python API (KMeans + KNN)
-└── _native.pyi           – type stubs
+├── knn/mod.rs            – KNN, 3 kernel variants, buffer reuse
+└── pca/mod.rs            – PCA: GPU Gram matrix + CPU eigh (Jacobi / Accelerate)
+python/
+├── metal_kmeans/__init__.py  – KMeans + KNN Python API
+└── metal_pca/__init__.py     – PCA Python API
 shaders/
 ├── kmeans.metal          – 5 Metal kernels (3 assign, 1 init, 1 centroid tiled)
-└── knn.metal             – 4 Metal kernels (3 assign, 1 gather)
+├── knn.metal             – 4 Metal kernels (3 assign, 1 gather)
+└── pca.metal             – 6 Metal kernels (mean, center, transpose, matmul, transform)
 examples/
 ├── example.py            – KMeans smoke test + benchmark
 ├── knn_example.py        – KNN benchmark across shapes
 ├── movie_recommendation.py – KNN movie recommendation engine
-└── customer_segmentation.py – KMeans customer segmentation (500K rows)
+├── customer_segmentation.py – KMeans customer segmentation (500K rows)
+└── pca_eigenfaces.py     – PCA eigenfaces reconstruction + face recognition
 docs/
 ├── algorithm.md          – algorithm deep-dive
 ├── python_api.md         – Python API reference

@@ -1,6 +1,7 @@
 pub mod metal;
 pub mod kmeans;
 pub mod knn;
+pub mod pca;
 
 #[cfg(feature = "python")]
 mod python;
@@ -13,6 +14,10 @@ pub use python::metal_kmeans_fit;
 pub use python::PyMetalKNeighbors;
 #[cfg(feature = "python")]
 pub use python::metal_kneighbors;
+#[cfg(feature = "python")]
+pub use python::PyMetalPCA;
+#[cfg(feature = "python")]
+pub use python::metal_pca_fit;
 
 #[cfg(feature = "python")]
 mod py_bridge {
@@ -25,6 +30,8 @@ mod py_bridge {
         m.add_function(wrap_pyfunction!(python::metal_kmeans_fit, m)?)?;
         m.add_class::<python::PyMetalKNeighbors>()?;
         m.add_function(wrap_pyfunction!(python::metal_kneighbors, m)?)?;
+        m.add_class::<python::PyMetalPCA>()?;
+        m.add_function(wrap_pyfunction!(python::metal_pca_fit, m)?)?;
         Ok(())
     }
 }

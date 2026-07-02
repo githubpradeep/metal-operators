@@ -1,6 +1,6 @@
 use crate::metal::MetalContext;
 use metal::*;
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 const SHADER_SRC: &str = include_str!("../../shaders/knn.metal");
 
@@ -37,7 +37,7 @@ pub struct KNN {
     variant: KernelVariant,
     corpus_buf: Option<Buffer>,
     norms_c_buf: Option<Buffer>,
-    scratch: RefCell<Scratch>,
+    scratch: Mutex<Scratch>,
 }
 
 impl KNN {
@@ -52,7 +52,7 @@ impl KNN {
             variant: KernelVariant::Dense,
             corpus_buf: None,
             norms_c_buf: None,
-            scratch: RefCell::new(Scratch {
+            scratch: Mutex::new(Scratch {
                 query: None,
                 norms_q: None,
                 out_score: None,
@@ -103,7 +103,7 @@ impl KNN {
         let norms_c_buf = self.norms_c_buf.as_ref().unwrap();
 
         let nqk = nq * k;
-        let mut s = self.scratch.borrow_mut();
+        let mut s = self.scratch.lock().unwrap();
 
         // query buffer
         let qbytes = (queries.len() * 4) as u64;
