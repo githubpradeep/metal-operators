@@ -1,12 +1,16 @@
 # metal-operators
 
-GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, and **PCA** via Apple Metal.
+GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, and **Logistic Regression** via Apple Metal.
 
 **KMeans** uses 5 kernel variants (simdgroup, split-D, tiled centroid) to run Lloyd's
 algorithm entirely on GPU — no CPU readback inside the loop.
 
 **KNN** uses 3 kernel variants (Dense direct-read for D<32, simdgroup Splitm for
 D≥32&D%8=0, Naive fallback) with buffer reuse for 2.6–22× speedup over BLAS-CPU.
+
+**LogisticRegression** uses 3 fused forward/backward kernel variants (simdgroup,
+split-D, naive) plus a dedicated predict kernel for full-batch L-BFGS (m = 10)
+training: one GPU launch evaluates loss + gradient over the whole dataset.
 
 ```python
 from metal_kmeans import metal_kmeans, MetalKMeans, metal_kneighbors, MetalKNeighbors
@@ -55,6 +59,7 @@ python3 examples/knn_example.py            # KNN: benchmark across shapes
 python3 examples/movie_recommendation.py   # KNN: movie recommendation engine
 python3 examples/customer_segmentation.py  # KMeans: 500K customer segmentation
 python3 examples/pca_eigenfaces.py         # PCA: eigenfaces reconstruction
+python3 examples/logistic_regression_example.py  # LogisticRegression: smoke test + benchmark
 ```
 
 ### PCA
@@ -83,6 +88,50 @@ transformed = pca.transform(X)         # (n, k) projection
 X_recon = transformed @ components
 recon_error = np.mean((X - X_recon)**2)
 ```
+
+### Logistic Regression
+
+Binary logistic regression trained with full-batch L-BFGS (m = 10). A fused
+forward/backward/loss Metal kernel (simdgroup for D≥8&D%8==0, split-D for
+D>128, naive fallback) evaluates the whole dataset in one launch per
+iteration; per-threadgroup partials are combined by a tiny deterministic
+reduction kernel in the same command buffer — one CPU↔GPU sync per
+iteration (no per-batch readback, no device atomics), plus a dedicated
+predict kernel. The two-stage reduction makes loss/gradient bitwise
+deterministic across runs.
+
+```python
+from metal_logistic_regression import metal_logistic_regression, MetalLogisticRegression
+import numpy as np
+
+# Synthetic two-blob binary classification data
+rng = np.random.RandomState(42)
+n, d = 2000, 8
+X = np.vstack([rng.randn(n // 2, d) - 1.5, rng.randn(n // 2, d) + 1.5]).astype(np.float32)
+y = np.concatenate([np.zeros(n // 2), np.ones(n // 2)]).astype(np.float32)
+
+# Functional API — returns (weights, bias, n_epochs, final_loss)
+weights, bias, n_epochs, loss = metal_logistic_regression(
+    X.ravel().tolist(), y.tolist(), n, d,
+    c=1.0, learning_rate=0.02, max_epochs=50, seed=42,
+)
+
+# sklearn-style API
+clf = MetalLogisticRegression(c=1.0, learning_rate=0.02, max_epochs=50, seed=42)
+clf.fit(X, y, n, d)
+
+# Access results
+coef = clf.coef_                 # (d,) learned coefficients
+intercept = clf.intercept_       # scalar bias
+proba = clf.predict_proba(X, n, d)  # (n,) probabilities
+preds = clf.predict(X, n, d)         # (n,) hard labels {0, 1}
+acc = clf.score(X, y, n, d)          # mean accuracy
+```
+
+Labels must be `{0.0, 1.0}`; `C` follows sklearn convention (inverse
+regularization strength). Training stops early when the gradient sup-norm
+drops below `tol`. `learning_rate`, `momentum`, `batch_size` and `seed` are
+accepted for API symmetry with flashlib but are not used by the optimizer.
 
 ## Requirements
 
@@ -210,6 +259,18 @@ println!("explained variance: {:?}", &pca.explained_variance());
 let transformed = pca.transform(&ctx, &data, n, d)?;
 ```
 
+```rust
+use metal_operators::logistic_regression::{LogisticRegression, LogisticRegressionConfig};
+
+let ctx = MetalContext::new()?;
+let mut lr = LogisticRegression::new(LogisticRegressionConfig {
+    c: 1.0, learning_rate: 0.02, max_epochs: 50, ..Default::default()
+});
+lr.fit(&ctx, &data, &y, n, d)?;
+println!("loss: {}", lr.final_loss);
+let probs = lr.predict_proba(&ctx, &data, n, d)?;
+```
+
 ## Tests
 
 ```sh
@@ -217,6 +278,7 @@ cargo test                     # Rust: 30+ integration tests
 python3 examples/example.py    # Python KMeans smoke test
 python3 examples/knn_example.py # Python KNN smoke test
 python3 examples/pca_eigenfaces.py # Python PCA eigenfaces example
+python3 examples/logistic_regression_example.py # Python LogisticRegression smoke test
 ```
 
 KMeans test matrix: D = {2, 4, 8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 256}, including adjusted Rand index validation against CPU reference, multi-simdgroup correctness, split-D, empty-cluster handling, and timing.
@@ -294,24 +356,28 @@ Centroid update: GPU (`kmeans_centroid_tiled`) when `(K×D+K)×4 ≤ 32 KB`, els
 ```
 src/
 ├── lib.rs               – crate root + PyO3 pymodule entry
-├── python.rs             – PyO3 bindings (KMeans, KNN, PCA)
+├── python.rs             – PyO3 bindings (KMeans, KNN, PCA, LogisticRegression)
 ├── metal/mod.rs          – MetalContext: device, queue, buffer helpers
 ├── kmeans/mod.rs         – KMeans, assign kernel picker, centroid dispatch
 ├── knn/mod.rs            – KNN, 3 kernel variants, buffer reuse
-└── pca/mod.rs            – PCA: GPU Gram matrix + CPU eigh (Jacobi / Accelerate)
+├── pca/mod.rs            – PCA: GPU Gram matrix + CPU eigh (Jacobi / Accelerate)
+└── logistic_regression/mod.rs – LogisticRegression: fused fwd/bwd/loss kernels + L-BFGS
 python/
 ├── metal_kmeans/__init__.py  – KMeans + KNN Python API
-└── metal_pca/__init__.py     – PCA Python API
+├── metal_pca/__init__.py     – PCA Python API
+└── metal_logistic_regression/__init__.py – LogisticRegression Python API
 shaders/
 ├── kmeans.metal          – 5 Metal kernels (3 assign, 1 init, 1 centroid tiled)
 ├── knn.metal             – 4 Metal kernels (3 assign, 1 gather)
-└── pca.metal             – 6 Metal kernels (mean, center, transpose, matmul, transform)
+├── pca.metal             – 6 Metal kernels (mean, center, transpose, matmul, transform)
+└── logistic.metal        – 4 Metal kernels (3 fused fwd/bwd, 1 predict)
 examples/
 ├── example.py            – KMeans smoke test + benchmark
 ├── knn_example.py        – KNN benchmark across shapes
 ├── movie_recommendation.py – KNN movie recommendation engine
 ├── customer_segmentation.py – KMeans customer segmentation (500K rows)
-└── pca_eigenfaces.py     – PCA eigenfaces reconstruction + face recognition
+├── pca_eigenfaces.py     – PCA eigenfaces reconstruction + face recognition
+└── logistic_regression_example.py – LogisticRegression smoke test + benchmark
 docs/
 ├── algorithm.md          – algorithm deep-dive
 ├── python_api.md         – Python API reference

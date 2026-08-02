@@ -49,10 +49,10 @@ class MetalPCA:
         """
         X = np.asarray(X, dtype=np.float32)
         n, d = X.shape
-        flat = X.ravel().tolist()
+        flat = np.ascontiguousarray(X, dtype=np.float32).tobytes()
 
         self._model = _MetalPCA(self.n_components)
-        self._model.fit(flat, n, d)
+        self._model.fit_bytes(flat, n, d)
 
         comps = self._model.components
         ev = self._model.explained_variance
@@ -85,8 +85,8 @@ class MetalPCA:
         """
         X = np.asarray(X, dtype=np.float32)
         n, d = X.shape
-        flat = X.ravel().tolist()
-        result = self._model.transform(flat, n, d)
+        flat = np.ascontiguousarray(X, dtype=np.float32).tobytes()
+        result = self._model.transform_bytes(flat, n, d)
         k = len(self.explained_variance_)
         return np.array(result, dtype=np.float32).reshape(n, k)
 

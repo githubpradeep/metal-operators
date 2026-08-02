@@ -13,7 +13,13 @@ pub struct KMeansConfig {
 
 impl Default for KMeansConfig {
     fn default() -> Self {
-        Self { k: 8, max_iterations: 100, tolerance: 1e-4, seed: 42, init_centroids: None }
+        Self {
+            k: 8,
+            max_iterations: 100,
+            tolerance: 1e-4,
+            seed: 42,
+            init_centroids: None,
+        }
     }
 }
 
@@ -36,10 +42,18 @@ impl KMeans {
         }
     }
 
-    pub fn centroids(&self) -> &[f32] { &self.centroids }
-    pub fn labels(&self) -> &[usize] { &self.labels }
-    pub fn inertia(&self) -> f32 { self.inertia }
-    pub fn n_iter(&self) -> usize { self.n_iter }
+    pub fn centroids(&self) -> &[f32] {
+        &self.centroids
+    }
+    pub fn labels(&self) -> &[usize] {
+        &self.labels
+    }
+    pub fn inertia(&self) -> f32 {
+        self.inertia
+    }
+    pub fn n_iter(&self) -> usize {
+        self.n_iter
+    }
 
     pub fn fit(
         &mut self,
@@ -52,13 +66,20 @@ impl KMeans {
             anyhow::bail!("Invalid parameters: n={}, d={}, k={}", n, d, self.config.k);
         }
         if data.len() != n * d {
-            anyhow::bail!("Data length mismatch: expected {}, got {}", n * d, data.len());
+            anyhow::bail!(
+                "Data length mismatch: expected {}, got {}",
+                n * d,
+                data.len()
+            );
         }
         if let Some(ref init) = self.config.init_centroids {
             if init.len() != self.config.k * d {
                 anyhow::bail!(
                     "init_centroids length {} mismatch: expected {} (k={}, d={})",
-                    init.len(), self.config.k * d, self.config.k, d
+                    init.len(),
+                    self.config.k * d,
+                    self.config.k,
+                    d
                 );
             }
         }
@@ -72,7 +93,11 @@ impl KMeans {
 
         // precompute point norms for kernels that use them (simdgroup, split-D)
         let use_norms = kernel_uses_norms(&kernel);
-        let norms_x = if use_norms { Some(compute_norms(data, n, d)) } else { None };
+        let norms_x = if use_norms {
+            Some(compute_norms(data, n, d))
+        } else {
+            None
+        };
         let norms_x_buf = norms_x.as_ref().map(|x| ctx.new_buffer(x));
 
         self.centroids = match &self.config.init_centroids {
@@ -102,11 +127,19 @@ impl KMeans {
 
             let t1 = std::time::Instant::now();
             dispatch_assign(
-                ctx, &pipeline_assign,
-                &point_buffer, &centroids_buf,
-                &assign_buffer, &dist_buffer,
-                norms_x_buf.as_ref(), norms_c_buf.as_ref(),
-                n, self.config.k, d, groups, tg_size,
+                ctx,
+                &pipeline_assign,
+                &point_buffer,
+                &centroids_buf,
+                &assign_buffer,
+                &dist_buffer,
+                norms_x_buf.as_ref(),
+                norms_c_buf.as_ref(),
+                n,
+                self.config.k,
+                d,
+                groups,
+                tg_size,
                 &kernel,
             );
             let t_assign = t1.elapsed().as_secs_f64() * 1000.0;
@@ -134,8 +167,16 @@ impl KMeans {
                 set_uint(&enc, 6, d as u32);
                 enc.set_threadgroup_memory_length(0, shared_needed as u64);
                 let ptile: u64 = 128;
-                let tg = MTLSize { width: ptile, height: 1, depth: 1 };
-                let grp = MTLSize { width: ((n as u64 + ptile - 1) / ptile), height: 1, depth: 1 };
+                let tg = MTLSize {
+                    width: ptile,
+                    height: 1,
+                    depth: 1,
+                };
+                let grp = MTLSize {
+                    width: ((n as u64 + ptile - 1) / ptile),
+                    height: 1,
+                    depth: 1,
+                };
                 enc.dispatch_thread_groups(grp, tg);
                 enc.end_encoding();
                 cmd_buf.commit();
@@ -173,9 +214,15 @@ impl KMeans {
             self.n_iter = iter + 1;
 
             if iter == 0 {
-                eprintln!("  timing[{}]: buf={:.3}ms assign={:.3}ms cent_{}={:.3}ms total={:.3}ms",
-                    iter, t_buf, t_assign, if via_gpu { "gpu" } else { "cpu" }, t_cent,
-                    t0.elapsed().as_secs_f64() * 1000.0);
+                eprintln!(
+                    "  timing[{}]: buf={:.3}ms assign={:.3}ms cent_{}={:.3}ms total={:.3}ms",
+                    iter,
+                    t_buf,
+                    t_assign,
+                    if via_gpu { "gpu" } else { "cpu" },
+                    t_cent,
+                    t0.elapsed().as_secs_f64() * 1000.0
+                );
             }
 
             if max_shift < self.config.tolerance {
@@ -190,7 +237,11 @@ impl KMeans {
     }
 
     pub fn predict(
-        &self, ctx: &MetalContext, data: &[f32], n: usize, d: usize,
+        &self,
+        ctx: &MetalContext,
+        data: &[f32],
+        n: usize,
+        d: usize,
     ) -> anyhow::Result<Vec<usize>> {
         let (kernel_name, kernel) = pick_assign_kernel(self.config.k, d);
         let pipeline = ctx.compile_kernel(SHADER_SRC, kernel_name)?;
@@ -200,7 +251,11 @@ impl KMeans {
         let dist_buffer = ctx.new_buffer_uninitialized((n * std::mem::size_of::<f32>()) as u64);
 
         let use_norms = kernel_uses_norms(&kernel);
-        let norms_x = if use_norms { Some(compute_norms(data, n, d)) } else { None };
+        let norms_x = if use_norms {
+            Some(compute_norms(data, n, d))
+        } else {
+            None
+        };
         let norms_x_buf = norms_x.as_ref().map(|x| ctx.new_buffer(x));
         let norms_c_buf = if use_norms {
             Some(ctx.new_buffer(&compute_norms(&self.centroids, self.config.k, d)))
@@ -214,11 +269,19 @@ impl KMeans {
             AssignKernel::SplitD => dispatch_splitd(n),
         };
         dispatch_assign(
-            ctx, &pipeline,
-            &point_buffer, &centroids_buffer,
-            &assign_buffer, &dist_buffer,
-            norms_x_buf.as_ref(), norms_c_buf.as_ref(),
-            n, self.config.k, d, groups, tg_size,
+            ctx,
+            &pipeline,
+            &point_buffer,
+            &centroids_buffer,
+            &assign_buffer,
+            &dist_buffer,
+            norms_x_buf.as_ref(),
+            norms_c_buf.as_ref(),
+            n,
+            self.config.k,
+            d,
+            groups,
+            tg_size,
             &kernel,
         );
 
@@ -240,7 +303,13 @@ impl KMeans {
     }
 
     #[allow(dead_code)]
-    fn compute_centroids(data: &[f32], n: usize, d: usize, k: usize, assignments: &[u32]) -> Vec<f32> {
+    fn compute_centroids(
+        data: &[f32],
+        n: usize,
+        d: usize,
+        k: usize,
+        assignments: &[u32],
+    ) -> Vec<f32> {
         let mut sums = vec![0.0f32; k * d];
         let mut counts = vec![0u64; k];
         for i in 0..n {
@@ -262,7 +331,11 @@ impl KMeans {
     }
 
     fn init_kmeans_plusplus(
-        &self, ctx: &MetalContext, data: &[f32], n: usize, d: usize,
+        &self,
+        ctx: &MetalContext,
+        data: &[f32],
+        n: usize,
+        d: usize,
     ) -> anyhow::Result<Vec<f32>> {
         let seed = if self.config.seed == 0 {
             std::time::SystemTime::now()
@@ -341,7 +414,9 @@ enum AssignKernel {
 }
 
 fn pick_assign_kernel(k: usize, d: usize) -> (&'static str, AssignKernel) {
-    if k == 0 { return ("kmeans_assign", AssignKernel::Naive); }
+    if k == 0 {
+        return ("kmeans_assign", AssignKernel::Naive);
+    }
 
     if d >= 8 && d % 8 == 0 {
         let dim_tiles = (d + 7) / 8;
@@ -369,7 +444,10 @@ fn pick_assign_kernel(k: usize, d: usize) -> (&'static str, AssignKernel) {
 }
 
 fn kernel_uses_norms(kernel: &AssignKernel) -> bool {
-    matches!(kernel, AssignKernel::Simdgroup | AssignKernel::SimdgroupC16 | AssignKernel::SplitD)
+    matches!(
+        kernel,
+        AssignKernel::Simdgroup | AssignKernel::SimdgroupC16 | AssignKernel::SplitD
+    )
 }
 
 fn compute_norms(data: &[f32], n: usize, d: usize) -> Vec<f32> {
@@ -383,21 +461,45 @@ fn compute_norms(data: &[f32], n: usize, d: usize) -> Vec<f32> {
 
 fn dispatch_splitd(n: usize) -> (MTLSize, MTLSize) {
     const PTILE: u64 = 128;
-    let groups = MTLSize { width: ((n as u64 + PTILE - 1) / PTILE), height: 1, depth: 1 };
-    let threads = MTLSize { width: PTILE, height: 1, depth: 1 };
+    let groups = MTLSize {
+        width: ((n as u64 + PTILE - 1) / PTILE),
+        height: 1,
+        depth: 1,
+    };
+    let threads = MTLSize {
+        width: PTILE,
+        height: 1,
+        depth: 1,
+    };
     (groups, threads)
 }
 
 fn dispatch_simdgroup(n: usize) -> (MTLSize, MTLSize) {
-    let groups = MTLSize { width: ((n as u64 + 7) / 8), height: 1, depth: 1 };
-    let threads = MTLSize { width: 128, height: 1, depth: 1 };
+    let groups = MTLSize {
+        width: ((n as u64 + 7) / 8),
+        height: 1,
+        depth: 1,
+    };
+    let threads = MTLSize {
+        width: 128,
+        height: 1,
+        depth: 1,
+    };
     (groups, threads)
 }
 
 fn dispatch_naive(n: usize) -> (MTLSize, MTLSize) {
     const TG: u64 = 256;
-    let groups = MTLSize { width: ((n as u64 + TG - 1) / TG), height: 1, depth: 1 };
-    let threads = MTLSize { width: TG, height: 1, depth: 1 };
+    let groups = MTLSize {
+        width: ((n as u64 + TG - 1) / TG),
+        height: 1,
+        depth: 1,
+    };
+    let threads = MTLSize {
+        width: TG,
+        height: 1,
+        depth: 1,
+    };
     (groups, threads)
 }
 
@@ -415,8 +517,11 @@ fn encode_assign(
     dist_buffer: &Buffer,
     norms_x_buf: Option<&Buffer>,
     norms_c_buf: Option<&Buffer>,
-    n: usize, k: usize, d: usize,
-    groups: MTLSize, tg_size: MTLSize,
+    n: usize,
+    k: usize,
+    d: usize,
+    groups: MTLSize,
+    tg_size: MTLSize,
     kernel: &AssignKernel,
 ) {
     encoder.set_compute_pipeline_state(pipeline);
@@ -470,18 +575,30 @@ fn dispatch_assign(
     dist_buffer: &Buffer,
     norms_x_buf: Option<&Buffer>,
     norms_c_buf: Option<&Buffer>,
-    n: usize, k: usize, d: usize,
-    groups: MTLSize, tg_size: MTLSize,
+    n: usize,
+    k: usize,
+    d: usize,
+    groups: MTLSize,
+    tg_size: MTLSize,
     kernel: &AssignKernel,
 ) {
     let cmd_buffer = ctx.queue.new_command_buffer();
     let encoder = cmd_buffer.new_compute_command_encoder();
     encode_assign(
-        &encoder, pipeline,
-        point_buffer, centroids_buffer,
-        assign_buffer, dist_buffer,
-        norms_x_buf, norms_c_buf,
-        n, k, d, groups, tg_size, kernel,
+        &encoder,
+        pipeline,
+        point_buffer,
+        centroids_buffer,
+        assign_buffer,
+        dist_buffer,
+        norms_x_buf,
+        norms_c_buf,
+        n,
+        k,
+        d,
+        groups,
+        tg_size,
+        kernel,
     );
     encoder.end_encoding();
     cmd_buffer.commit();
@@ -493,7 +610,9 @@ fn max_centroid_shift(old: &[f32], new: &[f32], k: usize, d: usize) -> f32 {
     for c in 0..k {
         for dim in 0..d {
             let shift = (new[c * d + dim] - old[c * d + dim]).abs();
-            if shift > max_shift { max_shift = shift; }
+            if shift > max_shift {
+                max_shift = shift;
+            }
         }
     }
     max_shift

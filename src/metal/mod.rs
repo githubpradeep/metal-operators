@@ -8,8 +8,8 @@ pub struct MetalContext {
 
 impl MetalContext {
     pub fn new() -> anyhow::Result<Self> {
-        let device = Device::system_default()
-            .ok_or_else(|| anyhow::anyhow!("No Metal device found"))?;
+        let device =
+            Device::system_default().ok_or_else(|| anyhow::anyhow!("No Metal device found"))?;
         let queue = device.new_command_queue();
         Ok(Self { device, queue })
     }
@@ -40,6 +40,15 @@ impl MetalContext {
     pub fn new_buffer_uninitialized(&self, byte_size: u64) -> Buffer {
         self.device
             .new_buffer(byte_size, MTLResourceOptions::StorageModeShared)
+    }
+
+    /// Write `data` into a shared-mode buffer (replaces contents on the CPU
+    /// side; callers must wait for in-flight GPU work first).
+    pub fn write_buffer<T>(&self, buffer: &Buffer, data: &[T]) {
+        let ptr = buffer.contents() as *mut T;
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+        }
     }
 
     pub fn read_buffer<T>(&self, buffer: &Buffer, count: usize) -> Vec<T> {

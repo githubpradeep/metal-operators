@@ -61,9 +61,20 @@ impl KNN {
         }
     }
 
-    pub fn fit(&mut self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<()> {
+    pub fn fit(
+        &mut self,
+        ctx: &MetalContext,
+        data: &[f32],
+        n: usize,
+        d: usize,
+    ) -> anyhow::Result<()> {
         anyhow::ensure!(d > 0 && n > 0, "Invalid parameters: n={}, d={}", n, d);
-        anyhow::ensure!(data.len() == n * d, "Data length mismatch: expected {}, got {}", n * d, data.len());
+        anyhow::ensure!(
+            data.len() == n * d,
+            "Data length mismatch: expected {}, got {}",
+            n * d,
+            data.len()
+        );
 
         self.corpus = data.to_vec();
         self.n_corpus = n;
@@ -91,7 +102,12 @@ impl KNN {
         Ok(())
     }
 
-    pub fn kneighbors(&self, ctx: &MetalContext, queries: &[f32], nq: usize) -> anyhow::Result<(Vec<f32>, Vec<u32>)> {
+    pub fn kneighbors(
+        &self,
+        ctx: &MetalContext,
+        queries: &[f32],
+        nq: usize,
+    ) -> anyhow::Result<(Vec<f32>, Vec<u32>)> {
         let k = self.config.k;
         anyhow::ensure!(self.n_corpus > 0, "KNN has not been fitted");
         anyhow::ensure!(queries.len() == nq * self.d, "Query length mismatch");
@@ -109,7 +125,13 @@ impl KNN {
         let qbytes = (queries.len() * 4) as u64;
         let query_buf = if let Some(buf) = &s.query {
             if buf.length() >= qbytes {
-                unsafe { std::ptr::copy_nonoverlapping(queries.as_ptr(), buf.contents() as *mut f32, queries.len()); }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        queries.as_ptr(),
+                        buf.contents() as *mut f32,
+                        queries.len(),
+                    );
+                }
                 buf.clone()
             } else {
                 let buf = ctx.new_buffer(queries);
@@ -126,7 +148,13 @@ impl KNN {
         let nqbytes = (norms_q.len() * 4) as u64;
         let norms_q_buf = if let Some(buf) = &s.norms_q {
             if buf.length() >= nqbytes {
-                unsafe { std::ptr::copy_nonoverlapping(norms_q.as_ptr(), buf.contents() as *mut f32, norms_q.len()); }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        norms_q.as_ptr(),
+                        buf.contents() as *mut f32,
+                        norms_q.len(),
+                    );
+                }
                 buf.clone()
             } else {
                 let buf = ctx.new_buffer(&norms_q);
@@ -179,26 +207,38 @@ impl KNN {
         match self.variant {
             KernelVariant::Dense => {
                 let nq_blocks = (nq as u64 + 127) / 128;
-                let groups = MTLSize { width: nq_blocks, height: 1, depth: 1 };
-                let tg = MTLSize { width: 128, height: 1, depth: 1 };
+                let groups = MTLSize {
+                    width: nq_blocks,
+                    height: 1,
+                    depth: 1,
+                };
+                let tg = MTLSize {
+                    width: 128,
+                    height: 1,
+                    depth: 1,
+                };
                 enc.dispatch_thread_groups(groups, tg);
             }
             KernelVariant::Splitm => {
                 set_u32(&enc, 10, splits as u32);
                 set_u32(&enc, 11, self.n_corpus as u32);
                 let num_tiles = (self.d + 7) / 8;
-                let shared_floats = 16 * self.d
-                    + self.d * 8
-                    + num_tiles * 16 * 8
-                    + 16 * k
-                    + 16 * k;
+                let shared_floats = 16 * self.d + self.d * 8 + num_tiles * 16 * 8 + 16 * k + 16 * k;
                 let shared_bytes = (shared_floats as u64) * 4;
                 if shared_bytes > 0 {
                     enc.set_threadgroup_memory_length(0, shared_bytes);
                 }
                 let nq_blocks = (nq as u64 + 15) / 16;
-                let groups = MTLSize { width: splits as u64, height: nq_blocks, depth: 1 };
-                let tg = MTLSize { width: 128, height: 1, depth: 1 };
+                let groups = MTLSize {
+                    width: splits as u64,
+                    height: nq_blocks,
+                    depth: 1,
+                };
+                let tg = MTLSize {
+                    width: 128,
+                    height: 1,
+                    depth: 1,
+                };
                 enc.dispatch_thread_groups(groups, tg);
             }
             KernelVariant::Naive => {
@@ -206,8 +246,16 @@ impl KNN {
                 set_u32(&enc, 11, self.n_corpus as u32);
                 let tg_per_block = 256u64;
                 let nq_blocks = (nq as u64 + tg_per_block - 1) / tg_per_block;
-                let groups = MTLSize { width: nq_blocks, height: 1, depth: 1 };
-                let tg = MTLSize { width: tg_per_block, height: 1, depth: 1 };
+                let groups = MTLSize {
+                    width: nq_blocks,
+                    height: 1,
+                    depth: 1,
+                };
+                let tg = MTLSize {
+                    width: tg_per_block,
+                    height: 1,
+                    depth: 1,
+                };
                 enc.dispatch_thread_groups(groups, tg);
             }
         }

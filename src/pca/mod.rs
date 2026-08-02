@@ -5,10 +5,16 @@ use std::sync::OnceLock;
 #[link(name = "Accelerate", kind = "framework")]
 unsafe extern "C" {
     fn ssyevd_(
-        jobz: *const u8, uplo: *const u8, n: *const i32,
-        a: *mut f32, lda: *const i32, w: *mut f32,
-        work: *mut f32, lwork: *const i32,
-        iwork: *mut i32, liwork: *const i32,
+        jobz: *const u8,
+        uplo: *const u8,
+        n: *const i32,
+        a: *mut f32,
+        lda: *const i32,
+        w: *mut f32,
+        work: *mut f32,
+        lwork: *const i32,
+        iwork: *mut i32,
+        liwork: *const i32,
         info: *mut i32,
     );
 }
@@ -94,14 +100,30 @@ impl PCA {
         }
     }
 
-    pub fn components(&self) -> &[f32] { &self.components }
-    pub fn explained_variance(&self) -> &[f32] { &self.explained_variance }
-    pub fn explained_variance_ratio(&self) -> &[f32] { &self.explained_variance_ratio }
-    pub fn mean(&self) -> &[f32] { &self.mean }
-    pub fn singular_values(&self) -> &[f32] { &self.singular_values }
-    pub fn noise_variance(&self) -> f32 { self.noise_variance }
-    pub fn n_features(&self) -> usize { self.d }
-    pub fn n_samples(&self) -> usize { self.n }
+    pub fn components(&self) -> &[f32] {
+        &self.components
+    }
+    pub fn explained_variance(&self) -> &[f32] {
+        &self.explained_variance
+    }
+    pub fn explained_variance_ratio(&self) -> &[f32] {
+        &self.explained_variance_ratio
+    }
+    pub fn mean(&self) -> &[f32] {
+        &self.mean
+    }
+    pub fn singular_values(&self) -> &[f32] {
+        &self.singular_values
+    }
+    pub fn noise_variance(&self) -> f32 {
+        self.noise_variance
+    }
+    pub fn n_features(&self) -> usize {
+        self.d
+    }
+    pub fn n_samples(&self) -> usize {
+        self.n
+    }
 
     /// Fit PCA — GPU-accelerated Gram matrix, CPU eigendecomposition.
     ///
@@ -120,7 +142,8 @@ impl PCA {
         anyhow::ensure!(data.len() == n * d, "Data length mismatch");
         anyhow::ensure!(
             self.config.n_components > 0 && self.config.n_components <= d,
-            "n_components must be between 1 and D ({})", d
+            "n_components must be between 1 and D ({})",
+            d
         );
 
         let k = self.config.n_components;
@@ -141,8 +164,7 @@ impl PCA {
         let block_size: u64 = 256;
         let num_blocks = ((n as u64) + block_size - 1) / block_size;
         let means_buf = ctx.new_buffer_uninitialized((d * 4) as u64);
-        let block_sums_buf =
-            ctx.new_buffer_uninitialized((num_blocks * d as u64 * 4) as u64);
+        let block_sums_buf = ctx.new_buffer_uninitialized((num_blocks * d as u64 * 4) as u64);
         let centered_buf = ctx.new_buffer_uninitialized((n * d * 4) as u64);
         let gram_buf = ctx.new_buffer_uninitialized((gram_dim * gram_dim * 4) as u64);
 
@@ -158,8 +180,16 @@ impl PCA {
         set_u32(&enc1, 4, d as u32);
         set_u32(&enc1, 5, num_blocks as u32);
         enc1.set_threadgroup_memory_length(0, (d * 4) as u64);
-        let tg1 = MTLSize { width: d as u64, height: 1, depth: 1 };
-        let grp1 = MTLSize { width: num_blocks, height: 1, depth: 1 };
+        let tg1 = MTLSize {
+            width: d as u64,
+            height: 1,
+            depth: 1,
+        };
+        let grp1 = MTLSize {
+            width: num_blocks,
+            height: 1,
+            depth: 1,
+        };
         enc1.dispatch_thread_groups(grp1, tg1);
         enc1.end_encoding();
 
@@ -171,8 +201,16 @@ impl PCA {
         set_u32(&enc2, 2, num_blocks as u32);
         set_u32(&enc2, 3, d as u32);
         set_u32(&enc2, 4, n as u32);
-        let tg2 = MTLSize { width: d as u64, height: 1, depth: 1 };
-        let grp2 = MTLSize { width: 1, height: 1, depth: 1 };
+        let tg2 = MTLSize {
+            width: d as u64,
+            height: 1,
+            depth: 1,
+        };
+        let grp2 = MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
         enc2.dispatch_thread_groups(grp2, tg2);
         enc2.end_encoding();
 
@@ -185,8 +223,16 @@ impl PCA {
         set_u32(&enc3, 3, n as u32);
         set_u32(&enc3, 4, d as u32);
         let total = (n * d) as u64;
-        let tg3 = MTLSize { width: 256, height: 1, depth: 1 };
-        let grp3 = MTLSize { width: (total + 255) / 256, height: 1, depth: 1 };
+        let tg3 = MTLSize {
+            width: 256,
+            height: 1,
+            depth: 1,
+        };
+        let grp3 = MTLSize {
+            width: (total + 255) / 256,
+            height: 1,
+            depth: 1,
+        };
         enc3.dispatch_thread_groups(grp3, tg3);
         enc3.end_encoding();
 
@@ -199,7 +245,11 @@ impl PCA {
         enc4.set_buffer(1, Some(&centered_t_buf), 0);
         set_u32(&enc4, 2, n as u32);
         set_u32(&enc4, 3, d as u32);
-        let tg4 = MTLSize { width: 16, height: 16, depth: 1 };
+        let tg4 = MTLSize {
+            width: 16,
+            height: 16,
+            depth: 1,
+        };
         let grp4 = MTLSize {
             width: (d as u64 + 15) / 16,
             height: (n as u64 + 15) / 16,
@@ -233,8 +283,16 @@ impl PCA {
         }
         enc5.set_buffer(2, Some(&gram_buf), 0);
         let gd = gram_dim as u64;
-        let tg5 = MTLSize { width: 16, height: 16, depth: 1 };
-        let grp5 = MTLSize { width: (gd + 15) / 16, height: (gd + 15) / 16, depth: 1 };
+        let tg5 = MTLSize {
+            width: 16,
+            height: 16,
+            depth: 1,
+        };
+        let grp5 = MTLSize {
+            width: (gd + 15) / 16,
+            height: (gd + 15) / 16,
+            depth: 1,
+        };
         enc5.dispatch_thread_groups(grp5, tg5);
         enc5.end_encoding();
 
@@ -249,7 +307,9 @@ impl PCA {
 
         // Divide Gram by N (covariance scaling)
         let inv_n = 1.0 / n as f32;
-        for v in gram.iter_mut() { *v *= inv_n; }
+        for v in gram.iter_mut() {
+            *v *= inv_n;
+        }
 
         // ── CPU eigendecomposition ──────────────────────────────────
         // Use Jacobi for small matrices, Accelerate LAPACK for larger ones.
@@ -316,7 +376,9 @@ impl PCA {
         self.components = comps;
         self.explained_variance = expl_var;
         self.explained_variance_ratio = expl_var_ratio;
-        self.singular_values = self.explained_variance.iter()
+        self.singular_values = self
+            .explained_variance
+            .iter()
             .map(|v| (self.n as f32 * v).sqrt())
             .collect();
         self.noise_variance = if k_actual < m {
@@ -336,8 +398,12 @@ impl PCA {
         n: usize,
         d: usize,
     ) -> anyhow::Result<Vec<f32>> {
-        anyhow::ensure!(d == self.d,
-            "Data dimension mismatch: got {}, expected {}", d, self.d);
+        anyhow::ensure!(
+            d == self.d,
+            "Data dimension mismatch: got {}, expected {}",
+            d,
+            self.d
+        );
         anyhow::ensure!(data.len() == n * d, "Data length mismatch");
         anyhow::ensure!(!self.components.is_empty(), "PCA not fitted");
 
@@ -359,16 +425,25 @@ impl PCA {
     // ── GPU transform ────────────────────────────────────────────
 
     fn transform_gpu(
-        &self, ctx: &MetalContext,
-        x: &[f32], means: &[f32], components: &[f32],
-        n: usize, d: usize, k: usize,
+        &self,
+        ctx: &MetalContext,
+        x: &[f32],
+        means: &[f32],
+        components: &[f32],
+        n: usize,
+        d: usize,
+        k: usize,
     ) -> anyhow::Result<Vec<f32>> {
         let x_buf = ctx.new_buffer(x);
         let means_buf = ctx.new_buffer(means);
         let comps_buf = ctx.new_buffer(components);
         let out_buf = ctx.new_buffer_uninitialized((n * k * 4) as u64);
 
-        let tg = MTLSize { width: 16, height: 16, depth: 1 };
+        let tg = MTLSize {
+            width: 16,
+            height: 16,
+            depth: 1,
+        };
         let grp = MTLSize {
             width: ((k as u64) + 15) / 16,
             height: ((n as u64) + 15) / 16,
@@ -404,8 +479,8 @@ impl PCA {
         let mut w = vec![0.0f32; m];
 
         let mut info: i32 = 0;
-        let jobz: u8 = b'V';  // compute eigenvalues + eigenvectors
-        let uplo: u8 = b'U';  // upper triangle stored
+        let jobz: u8 = b'V'; // compute eigenvalues + eigenvectors
+        let uplo: u8 = b'U'; // upper triangle stored
 
         // Query optimal workspace size
         let mut lwork: i32 = -1;
@@ -414,8 +489,17 @@ impl PCA {
         let mut iwork_size: i32 = 0;
         unsafe {
             ssyevd_(
-                &jobz, &uplo, &n, a_mat.as_mut_ptr(), &lda, w.as_mut_ptr(),
-                &mut work_size, &lwork, &mut iwork_size, &liwork, &mut info,
+                &jobz,
+                &uplo,
+                &n,
+                a_mat.as_mut_ptr(),
+                &lda,
+                w.as_mut_ptr(),
+                &mut work_size,
+                &lwork,
+                &mut iwork_size,
+                &liwork,
+                &mut info,
             );
         }
         lwork = work_size as i32;
@@ -425,8 +509,17 @@ impl PCA {
         let mut iwork = vec![0i32; liwork as usize];
         unsafe {
             ssyevd_(
-                &jobz, &uplo, &n, a_mat.as_mut_ptr(), &lda, w.as_mut_ptr(),
-                work.as_mut_ptr(), &lwork, iwork.as_mut_ptr(), &liwork, &mut info,
+                &jobz,
+                &uplo,
+                &n,
+                a_mat.as_mut_ptr(),
+                &lda,
+                w.as_mut_ptr(),
+                work.as_mut_ptr(),
+                &lwork,
+                iwork.as_mut_ptr(),
+                &liwork,
+                &mut info,
             );
         }
         anyhow::ensure!(info == 0, "ssyevd failed with info={}", info);
@@ -451,7 +544,9 @@ impl PCA {
 
         let mut a_mat = a.to_vec();
         let mut v_mat = vec![0.0f32; m * m];
-        for i in 0..m { v_mat[i * m + i] = 1.0; }
+        for i in 0..m {
+            v_mat[i * m + i] = 1.0;
+        }
 
         for _sweep in 0..max_sweeps {
             let mut converged = true;
@@ -461,7 +556,9 @@ impl PCA {
                     let a_pp = a_mat[p * m + p];
                     let a_qq = a_mat[q * m + q];
                     let threshold = tol * (a_pp.abs() + a_qq.abs()) * 0.5;
-                    if a_pq.abs() <= threshold { continue; }
+                    if a_pq.abs() <= threshold {
+                        continue;
+                    }
                     converged = false;
 
                     let tau = (a_qq - a_pp) / (2.0 * a_pq);
@@ -496,11 +593,15 @@ impl PCA {
                     }
                 }
             }
-            if converged { break; }
+            if converged {
+                break;
+            }
         }
 
         let mut eigvals = vec![0.0f32; m];
-        for i in 0..m { eigvals[i] = a_mat[i * m + i]; }
+        for i in 0..m {
+            eigvals[i] = a_mat[i * m + i];
+        }
 
         let mut indices: Vec<usize> = (0..m).collect();
         indices.sort_by(|&i, &j| eigvals[i].partial_cmp(&eigvals[j]).unwrap());

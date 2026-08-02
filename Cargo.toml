@@ -36,3 +36,7 @@ harness = false
 [[bench]]
 name = "pca_benchmark"
 harness = false
+
+[[bench]]
+name = "logistic_regression_benchmark"
+harness = false

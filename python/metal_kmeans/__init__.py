@@ -34,9 +34,9 @@ from typing import Tuple
 import numpy as np
 
 from ._native import MetalKMeans as _MetalKMeans
-from ._native import metal_kmeans_fit as _metal_kmeans_fit
+from ._native import metal_kmeans_fit_bytes as _metal_kmeans_fit
 from ._native import MetalKNeighbors as _MetalKNeighbors
-from ._native import metal_kneighbors as _metal_kneighbors
+from ._native import metal_kneighbors_bytes as _metal_kneighbors
 
 __all__ = ["MetalKMeans", "metal_kmeans", "MetalKNeighbors", "metal_kneighbors"]
 
@@ -83,8 +83,8 @@ class MetalKMeans:
         -------
         self
         """
-        arr = _to_vec_f32(data)
-        self._inner.fit(arr, n, d)
+        arr = _as_bytes_f32(data)
+        self._inner.fit_bytes(arr, n, d)
         self._d = d
         return self
 
@@ -104,8 +104,8 @@ class MetalKMeans:
         -------
         labels : np.ndarray of shape (n,) with dtype intp
         """
-        arr = _to_vec_f32(data)
-        raw = self._inner.predict(arr, n, d)
+        arr = _as_bytes_f32(data)
+        raw = self._inner.predict_bytes(arr, n, d)
         return np.array(raw, dtype=np.intp)
 
     @property
@@ -170,7 +170,7 @@ def metal_kmeans(
     inertia : float
         Within-cluster sum of squared distances.
     """
-    arr = _to_vec_f32(data)
+    arr = _as_bytes_f32(data)
     raw_labels, raw_centroids, n_iter, inertia = _metal_kmeans_fit(
         arr, n, d, n_clusters, max_iterations, tolerance, seed
     )
@@ -179,12 +179,15 @@ def metal_kmeans(
     return labels, centroids, n_iter, inertia
 
 
-def _to_vec_f32(data: np.ndarray | list[float]) -> list[float]:
+def _as_bytes_f32(data: np.ndarray | list[float]) -> bytes:
+    """Return raw little-endian float32 bytes of *data* (C-speed memcpy).
+
+    Consumed by the ``_bytes`` bindings — avoiding the O(n) ``tolist()``
+    roundtrip that the ``Vec<f32>`` methods pay (multi-second on 1M+ samples).
+    """
     if isinstance(data, np.ndarray):
-        if data.dtype != np.float32:
-            data = data.astype(np.float32)
-        return data.ravel(order="C").tolist()
-    return list(data)
+        return np.ascontiguousarray(data, dtype=np.float32).tobytes()
+    return np.asarray(data, dtype=np.float32).tobytes()
 
 
 # ── KNN ─────────────────────────────────────────────────────────
@@ -219,8 +222,8 @@ class MetalKNeighbors:
         -------
         self
         """
-        arr = _to_vec_f32(data)
-        self._inner.fit(arr, n, d)
+        arr = _as_bytes_f32(data)
+        self._inner.fit_bytes(arr, n, d)
         self._d = d
         return self
 
@@ -243,8 +246,8 @@ class MetalKNeighbors:
         indices : np.ndarray of shape (nq, n_neighbors) int64
             Indices of neighbours in the corpus.
         """
-        arr = _to_vec_f32(queries)
-        raw_d, raw_i = self._inner.kneighbors(arr, nq)
+        arr = _as_bytes_f32(queries)
+        raw_d, raw_i = self._inner.kneighbors_bytes(arr, nq)
         k = self._n_neighbors
         distances = np.array(raw_d, dtype=np.float32).reshape(nq, k)
         indices = np.array(raw_i, dtype=np.intp).reshape(nq, k)
@@ -283,8 +286,8 @@ def metal_kneighbors(
     indices : np.ndarray of shape (n_queries, n_neighbors) int64
         Indices of neighbours in the corpus.
     """
-    c_arr = _to_vec_f32(corpus)
-    q_arr = _to_vec_f32(queries)
+    c_arr = _as_bytes_f32(corpus)
+    q_arr = _as_bytes_f32(queries)
     raw_d, raw_i = _metal_kneighbors(c_arr, n_corpus, d, q_arr, n_queries, n_neighbors)
     distances = np.array(raw_d, dtype=np.float32).reshape(n_queries, n_neighbors)
     indices = np.array(raw_i, dtype=np.intp).reshape(n_queries, n_neighbors)
