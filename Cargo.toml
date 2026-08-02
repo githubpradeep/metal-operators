@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "logistic_regression_benchmark"
 harness = false
+
+[[bench]]
+name = "linear_regression_benchmark"
+harness = false

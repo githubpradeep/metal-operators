@@ -1,5 +1,6 @@
 use crate::kmeans::{KMeans, KMeansConfig};
 use crate::knn::{KNNConfig, KNN};
+use crate::linear_regression::{LinearRegression, LinearRegressionConfig};
 use crate::logistic_regression::{LogisticRegression, LogisticRegressionConfig};
 use crate::metal::MetalContext;
 use crate::pca::{PCAConfig, PCA};
@@ -591,4 +592,167 @@ pub fn metal_logistic_regression_fit_bytes(
     lr.fit(ctx, &data, &y, n, d)
         .map_err(|e| PyRuntimeError::new_err(format!("LogisticRegression fit failed: {}", e)))?;
     Ok((lr.weights().to_vec(), lr.bias(), lr.n_epochs, lr.final_loss))
+}
+
+// ── Linear Regression ─────────────────────────────────────────────
+
+#[pyclass(name = "MetalLinearRegression")]
+pub struct PyMetalLinearRegression {
+    inner: LinearRegression,
+}
+
+#[pymethods]
+impl PyMetalLinearRegression {
+    #[new]
+    #[pyo3(signature = (alpha=0.0, fit_intercept=true, max_iterations=100, tol=1e-4, seed=42))]
+    fn new(alpha: f32, fit_intercept: bool, max_iterations: usize, tol: f32, seed: u64) -> Self {
+        let config = LinearRegressionConfig {
+            alpha,
+            fit_intercept,
+            max_iterations,
+            tol,
+            seed,
+        };
+        Self {
+            inner: LinearRegression::new(config),
+        }
+    }
+
+    fn fit(&mut self, data: Vec<f32>, y: Vec<f32>, n: usize, d: usize) -> PyResult<()> {
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("LinearRegression fit failed: {}", e)))
+    }
+
+    fn predict(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("LinearRegression predict failed: {}", e)))
+    }
+
+    fn score(&self, data: Vec<f32>, y: Vec<f32>, n: usize, d: usize) -> PyResult<f32> {
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("LinearRegression score failed: {}", e)))
+    }
+
+    // ── Bytes-based variants (zero-copy for numpy inputs) ──
+    // Accept the raw little-endian float32 bytes via the buffer protocol
+    // (a contiguous numpy float32 array passes through without conversion),
+    // avoiding the O(n) Python-list roundtrip that `Vec<f32>` arguments pay.
+
+    fn fit_bytes(&mut self, data: &[u8], y: &[u8], n: usize, d: usize) -> PyResult<()> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let y = bytes_to_vec_f32(y, "y")?;
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("LinearRegression fit failed: {}", e)))
+    }
+
+    fn predict_bytes(&self, data: &[u8], n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("LinearRegression predict failed: {}", e)))
+    }
+
+    fn score_bytes(&self, data: &[u8], y: &[u8], n: usize, d: usize) -> PyResult<f32> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let y = bytes_to_vec_f32(y, "y")?;
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("LinearRegression score failed: {}", e)))
+    }
+
+    #[getter]
+    fn weights(&self) -> Vec<f32> {
+        self.inner.weights().to_vec()
+    }
+
+    #[getter]
+    fn bias(&self) -> f32 {
+        self.inner.bias()
+    }
+
+    #[getter]
+    fn coef_(&self) -> Vec<f32> {
+        self.inner.weights().to_vec()
+    }
+
+    #[getter]
+    fn intercept_(&self) -> f32 {
+        self.inner.bias()
+    }
+
+    #[getter]
+    fn n_iter(&self) -> usize {
+        self.inner.n_iter
+    }
+
+    #[getter]
+    fn final_loss(&self) -> f32 {
+        self.inner.final_loss
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, y, n, d, alpha=0.0, fit_intercept=true, max_iterations=100, tol=1e-4, seed=42))]
+pub fn metal_linear_regression_fit(
+    data: Vec<f32>,
+    y: Vec<f32>,
+    n: usize,
+    d: usize,
+    alpha: f32,
+    fit_intercept: bool,
+    max_iterations: usize,
+    tol: f32,
+    seed: u64,
+) -> PyResult<(Vec<f32>, f32, usize, f32)> {
+    let ctx = get_context()?;
+    let config = LinearRegressionConfig {
+        alpha,
+        fit_intercept,
+        max_iterations,
+        tol,
+        seed,
+    };
+    let mut lr = LinearRegression::new(config);
+    lr.fit(ctx, &data, &y, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("LinearRegression fit failed: {}", e)))?;
+    Ok((lr.weights().to_vec(), lr.bias(), lr.n_iter, lr.final_loss))
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, y, n, d, alpha=0.0, fit_intercept=true, max_iterations=100, tol=1e-4, seed=42))]
+pub fn metal_linear_regression_fit_bytes(
+    data: &[u8],
+    y: &[u8],
+    n: usize,
+    d: usize,
+    alpha: f32,
+    fit_intercept: bool,
+    max_iterations: usize,
+    tol: f32,
+    seed: u64,
+) -> PyResult<(Vec<f32>, f32, usize, f32)> {
+    let data = bytes_to_vec_f32(data, "data")?;
+    let y = bytes_to_vec_f32(y, "y")?;
+    let ctx = get_context()?;
+    let config = LinearRegressionConfig {
+        alpha,
+        fit_intercept,
+        max_iterations,
+        tol,
+        seed,
+    };
+    let mut lr = LinearRegression::new(config);
+    lr.fit(ctx, &data, &y, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("LinearRegression fit failed: {}", e)))?;
+    Ok((lr.weights().to_vec(), lr.bias(), lr.n_iter, lr.final_loss))
 }

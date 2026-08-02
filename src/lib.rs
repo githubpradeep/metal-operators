@@ -1,5 +1,6 @@
 pub mod kmeans;
 pub mod knn;
+pub mod linear_regression;
 pub mod logistic_regression;
 pub mod metal;
 pub mod pca;
@@ -12,6 +13,8 @@ pub use python::metal_kmeans_fit;
 #[cfg(feature = "python")]
 pub use python::metal_kneighbors;
 #[cfg(feature = "python")]
+pub use python::metal_linear_regression_fit;
+#[cfg(feature = "python")]
 pub use python::metal_logistic_regression_fit;
 #[cfg(feature = "python")]
 pub use python::metal_pca_fit;
@@ -19,6 +22,8 @@ pub use python::metal_pca_fit;
 pub use python::PyMetalKMeans;
 #[cfg(feature = "python")]
 pub use python::PyMetalKNeighbors;
+#[cfg(feature = "python")]
+pub use python::PyMetalLinearRegression;
 #[cfg(feature = "python")]
 pub use python::PyMetalLogisticRegression;
 #[cfg(feature = "python")]
@@ -44,6 +49,12 @@ mod py_bridge {
         m.add_function(wrap_pyfunction!(python::metal_logistic_regression_fit, m)?)?;
         m.add_function(wrap_pyfunction!(
             python::metal_logistic_regression_fit_bytes,
+            m
+        )?)?;
+        m.add_class::<python::PyMetalLinearRegression>()?;
+        m.add_function(wrap_pyfunction!(python::metal_linear_regression_fit, m)?)?;
+        m.add_function(wrap_pyfunction!(
+            python::metal_linear_regression_fit_bytes,
             m
         )?)?;
         Ok(())

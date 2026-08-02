@@ -1,6 +1,6 @@
 # metal-operators
 
-GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, and **Logistic Regression** via Apple Metal.
+GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **Logistic Regression**, and **Linear Regression** via Apple Metal.
 
 **KMeans** uses 5 kernel variants (simdgroup, split-D, tiled centroid) to run Lloyd's
 algorithm entirely on GPU — no CPU readback inside the loop.
@@ -11,6 +11,12 @@ D≥32&D%8=0, Naive fallback) with buffer reuse for 2.6–22× speedup over BLAS
 **LogisticRegression** uses 3 fused forward/backward kernel variants (simdgroup,
 split-D, naive) plus a dedicated predict kernel for full-batch L-BFGS (m = 10)
 training: one GPU launch evaluates loss + gradient over the whole dataset.
+
+**LinearRegression** solves the normal equations in closed form: a tiled
+shared-memory Gram kernel (D ≤ 128) and a chunked Xᵀy/column-sum kernel build
+the augmented system, a deterministic reduction combines per-group partials,
+and the (D+1)² system is solved on the host — matching sklearn's `cholesky`
+solver with optional L2 ridge.
 
 ```python
 from metal_kmeans import metal_kmeans, MetalKMeans, metal_kneighbors, MetalKNeighbors
@@ -60,6 +66,8 @@ python3 examples/movie_recommendation.py   # KNN: movie recommendation engine
 python3 examples/customer_segmentation.py  # KMeans: 500K customer segmentation
 python3 examples/pca_eigenfaces.py         # PCA: eigenfaces reconstruction
 python3 examples/logistic_regression_example.py  # LogisticRegression: smoke test + benchmark
+python3 examples/linear_regression_example.py    # LinearRegression: smoke test + benchmark
+python3 examples/diabetes_regression.py          # LinearRegression: real diabetes data (442×10)
 ```
 
 ### PCA
@@ -132,6 +140,52 @@ Labels must be `{0.0, 1.0}`; `C` follows sklearn convention (inverse
 regularization strength). Training stops early when the gradient sup-norm
 drops below `tol`. `learning_rate`, `momentum`, `batch_size` and `seed` are
 accepted for API symmetry with flashlib but are not used by the optimizer.
+
+### Linear Regression
+
+Linear regression solved exactly in closed form via the normal equations
+(matching sklearn's `LinearRegression`/`Ridge` with the default `cholesky`
+solver). Two streaming Metal kernels build the augmented Gram system
+(`[XᵀX | Xᵀ·1; 1ᵀ·X | n]` and `[Xᵀy; Σy]`): the XᵀX kernel stages row blocks
+in shared memory for D ≤ 128 (tiled; ideal `n·d` memory traffic) or uses one
+thread per element for D > 128, the Xᵀy kernel computes column sums /
+Xᵀy / Σy from chunked element columns, and a tiny deterministic reduction
+combines the per-group partials — no device atomics, two CPU↔GPU syncs
+total. The (D+1)×(D+1) system is solved on the host with Gaussian
+elimination + partial pivoting, and a dedicated predict kernel evaluates the
+model.
+
+```python
+from metal_linear_regression import metal_linear_regression, MetalLinearRegression
+import numpy as np
+
+# Synthetic data with known coefficients
+rng = np.random.RandomState(42)
+n, d = 2000, 8
+X = (rng.randn(n, d) * 2.0 - 1.0).astype(np.float32)
+w_true = rng.randn(d).astype(np.float32)
+y = (X @ w_true + 1.5 + 0.1 * rng.randn(n)).astype(np.float32)
+
+# Functional API — returns (weights, bias, n_iter, final_loss)
+weights, bias, n_iter, mse = metal_linear_regression(
+    X.ravel().tolist(), y.tolist(), n, d, alpha=0.0, fit_intercept=True,
+)
+
+# sklearn-style API
+reg = MetalLinearRegression(alpha=0.0, fit_intercept=True)
+reg.fit(X, y, n, d)
+
+# Access results
+coef = reg.coef_                 # (d,) learned coefficients
+intercept = reg.intercept_       # scalar bias
+preds = reg.predict(X, n, d)     # (n,) predictions
+r2 = reg.score(X, y, n, d)       # coefficient of determination (R²)
+```
+
+`alpha > 0` adds L2 ridge regularization on the coefficients (sklearn
+`Ridge` convention); `fit_intercept=False` drops the bias column from the
+augmented system. `max_iterations`, `tol` and `seed` are accepted for API
+symmetry with flashlib but are unused by the closed-form solver.
 
 ## Requirements
 
@@ -271,6 +325,20 @@ println!("loss: {}", lr.final_loss);
 let probs = lr.predict_proba(&ctx, &data, n, d)?;
 ```
 
+```rust
+use metal_operators::linear_regression::{LinearRegression, LinearRegressionConfig};
+
+let ctx = MetalContext::new()?;
+let mut lr = LinearRegression::new(LinearRegressionConfig {
+    alpha: 0.0, fit_intercept: true, ..Default::default()
+});
+lr.fit(&ctx, &data, &y, n, d)?;
+println!("weights: {:?}", lr.weights());
+println!("bias:    {}", lr.intercept());
+let preds = lr.predict(&ctx, &data, n, d)?;
+println!("R²:      {}", lr.score(&ctx, &data, &y, n, d)?);
+```
+
 ## Tests
 
 ```sh
@@ -279,6 +347,7 @@ python3 examples/example.py    # Python KMeans smoke test
 python3 examples/knn_example.py # Python KNN smoke test
 python3 examples/pca_eigenfaces.py # Python PCA eigenfaces example
 python3 examples/logistic_regression_example.py # Python LogisticRegression smoke test
+python3 examples/linear_regression_example.py   # Python LinearRegression smoke test
 ```
 
 KMeans test matrix: D = {2, 4, 8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 256}, including adjusted Rand index validation against CPU reference, multi-simdgroup correctness, split-D, empty-cluster handling, and timing.
@@ -286,6 +355,8 @@ KMeans test matrix: D = {2, 4, 8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 2
 KNN test matrix: D = {3, 8, 16, 32}, K = {1, 3, 5, 10}, covering Dense, Splitm, and Naive kernel paths plus deterministic reproducibility.
 
 PCA test matrix: 12 tests covering cov path (N≥D), Gram path (N<D), explained variance ordering, orthonormal components, reconstruction accuracy, single-component edge case, and transform output shape.
+
+Linear regression test matrix: 10 tests covering recovery of known coefficients, R² accuracy vs CPU reference, ridge shrinkage, no-intercept mode, singular data, determinism, and kernel dispatch sweep (D = {2, 3, 8, 16, 64, 128, 256}).
 
 ## Benchmarks
 
@@ -334,6 +405,28 @@ PCA uses: GPU for mean → center → transpose → matmul (chained, single comm
 
 GPU matches or beats sklearn in square and wide regimes; tall regimes are close (0.7×) due to GPU command buffer overhead (~2 ms) dominating a cheap 128×128 Gram solve. On medium-square shapes, GPU is **2.5× faster** than sklearn by avoiding SVD overhead on the Gram path.
 
+### Linear Regression fit benchmarks (Apple M3)
+
+```sh
+cargo bench --bench linear_regression_benchmark
+```
+
+| N | D | Metal | CPU | sklearn | Speedup |
+|---|---|---|---|---|---|
+| 10K | 8 | 1.75 ms | 0.53 ms | 1.95 ms | 1.1× vs sklearn |
+| 10K | 32 | 2.75 ms | 3.90 ms | 4.33 ms | 1.4× vs CPU |
+| 100K | 8 | 4.84 ms | 5.29 ms | 9.13 ms | 1.1× vs CPU |
+| 100K | 32 | 8.89 ms | 38.93 ms | 31.50 ms | **4.4× vs CPU** |
+| 100K | 128 | 49.97 ms | 227.72 ms | 238.83 ms | **4.6× vs CPU** |
+| 1M | 8 | 15.72 ms | 52.31 ms | 72.71 ms | **3.3× vs CPU** |
+| 1M | 32 | 67.73 ms | 389.85 ms | 412.52 ms | **5.8× vs CPU** |
+
+The Gram build streams the dataset with ideal `n·d` memory traffic: shared-memory
+row tiles for D ≤ 128 (tiled kernel), chunked element columns for Xᵀy/colsum,
+plus a fixed-order reduction. Tiny shapes (10K×8) are latency-bound (~2 ms
+command-buffer overhead), but the GPU wins from 100K rows / D ≥ 32 up to
+**5.8× vs CPU and 6.1× vs sklearn** at 1M×32.
+
 ### PCA kernel dispatch
 
 - **Cov path** (N ≥ D): `centered^T @ centered / N` → D×D Gram → CPU eigh
@@ -356,28 +449,33 @@ Centroid update: GPU (`kmeans_centroid_tiled`) when `(K×D+K)×4 ≤ 32 KB`, els
 ```
 src/
 ├── lib.rs               – crate root + PyO3 pymodule entry
-├── python.rs             – PyO3 bindings (KMeans, KNN, PCA, LogisticRegression)
+├── python.rs             – PyO3 bindings (KMeans, KNN, PCA, LogisticRegression, LinearRegression)
 ├── metal/mod.rs          – MetalContext: device, queue, buffer helpers
 ├── kmeans/mod.rs         – KMeans, assign kernel picker, centroid dispatch
 ├── knn/mod.rs            – KNN, 3 kernel variants, buffer reuse
 ├── pca/mod.rs            – PCA: GPU Gram matrix + CPU eigh (Jacobi / Accelerate)
-└── logistic_regression/mod.rs – LogisticRegression: fused fwd/bwd/loss kernels + L-BFGS
+├── logistic_regression/mod.rs – LogisticRegression: fused fwd/bwd/loss kernels + L-BFGS
+└── linear_regression/mod.rs   – LinearRegression: tiled Gram + chunked Xᵀy + host solve
 python/
 ├── metal_kmeans/__init__.py  – KMeans + KNN Python API
 ├── metal_pca/__init__.py     – PCA Python API
-└── metal_logistic_regression/__init__.py – LogisticRegression Python API
+├── metal_logistic_regression/__init__.py – LogisticRegression Python API
+└── metal_linear_regression/__init__.py   – LinearRegression Python API
 shaders/
 ├── kmeans.metal          – 5 Metal kernels (3 assign, 1 init, 1 centroid tiled)
 ├── knn.metal             – 4 Metal kernels (3 assign, 1 gather)
 ├── pca.metal             – 6 Metal kernels (mean, center, transpose, matmul, transform)
-└── logistic.metal        – 4 Metal kernels (3 fused fwd/bwd, 1 predict)
+├── logistic.metal        – 4 Metal kernels (3 fused fwd/bwd, 1 predict)
+└── linear.metal          – 5 Metal kernels (2 XᵀX, 1 Xᵀy, 1 reduce, 1 predict)
 examples/
 ├── example.py            – KMeans smoke test + benchmark
 ├── knn_example.py        – KNN benchmark across shapes
 ├── movie_recommendation.py – KNN movie recommendation engine
 ├── customer_segmentation.py – KMeans customer segmentation (500K rows)
 ├── pca_eigenfaces.py     – PCA eigenfaces reconstruction + face recognition
-└── logistic_regression_example.py – LogisticRegression smoke test + benchmark
+├── logistic_regression_example.py – LogisticRegression smoke test + benchmark
+├── linear_regression_example.py   – LinearRegression smoke test + benchmark
+└── diabetes_regression.py         – LinearRegression on real diabetes data (442×10)
 docs/
 ├── algorithm.md          – algorithm deep-dive
 ├── python_api.md         – Python API reference
