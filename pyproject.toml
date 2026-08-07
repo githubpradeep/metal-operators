@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "metal-operators"
 version = "0.2.0"
-description = "GPU-accelerated ML operators (KMeans, KNN, PCA, Logistic Regression, Linear Regression) using Apple Metal, via Rust + PyO3"
+description = "GPU-accelerated ML operators (KMeans, KNN, PCA, Logistic Regression, Linear Regression, Gaussian Naive Bayes) using Apple Metal, via Rust + PyO3"
 requires-python = ">=3.9"
 dependencies = [
     "numpy",

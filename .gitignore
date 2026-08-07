@@ -6,3 +6,6 @@ __pycache__/
 *.dylib
 *.png
 .DS_Store
+.venv/
+.rs-agent/
+brain/

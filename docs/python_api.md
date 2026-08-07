@@ -350,3 +350,158 @@ transformed = pca.transform(X)        # (1000, 5)
 - Small datasets (< 10K samples, < 50 features) are faster on CPU — GPU overhead dominates.
 - Medium-large shapes (1K-100K samples, 128-8K features) see 1-6× speedup vs CPU.
 - sklearn Pipeline compatibility: `make_pipeline(MetalPCA(n_components=k), SomeClassifier())` works with `y=None` in fit methods.
+
+## Gaussian Naive Bayes API
+
+The `metal_gaussian_nb` package provides GPU-accelerated Gaussian Naive Bayes via Apple Metal.
+
+### `metal_gaussian_nb_fit` (functional API)
+
+```python
+from metal_gaussian_nb import metal_gaussian_nb_fit
+
+theta, var, prior = metal_gaussian_nb_fit(data, y, n, d, n_classes, var_smoothing=1e-9)
+```
+
+- `data` — flat row-major `(n, d)` features (`list[float]` or `np.ndarray[float32]`).
+- `y` — class labels `(n,)` as integers in `[0, n_classes)`.
+- `n` — number of samples; `d` — number of features; `n_classes` — number of classes (>= 2).
+- `var_smoothing` — fraction of the largest per-class variance added to all variances (default `1e-9`).
+
+Returns `(theta_, var_, class_prior_)` — per-class means `(k, d)`, per-class variances `(k, d)`, and empirical priors `(k,)`, all float32.
+
+### `MetalGaussianNB` (sklearn-style class)
+
+```python
+from metal_gaussian_nb import MetalGaussianNB
+
+clf = MetalGaussianNB(var_smoothing=1e-9)
+clf.fit(data, y, n, d, n_classes)
+```
+
+#### Methods
+
+- `fit(data, y, n, d, n_classes) -> MetalGaussianNB` — GPU reduction pass (per-class sum / sum-of-squares), one CPU↔GPU sync.
+- `predict(data, n, d) -> np.ndarray[intp]` — argmax class label per sample, shape `(n,)`.
+- `predict_log_proba(data, n, d) -> np.ndarray[float32]` — normalized log-probabilities, shape `(n, n_classes)`.
+- `predict_proba(data, n, d) -> np.ndarray[float32]` — class probabilities, shape `(n, n_classes)`, rows sum to 1.
+- `score(data, y, n, d) -> float` — mean accuracy.
+
+#### Properties
+
+- `theta_` — `(n_classes, d)` per-class feature means (sklearn-style name).
+- `var_` — `(n_classes, d)` per-class feature variances after smoothing.
+- `class_prior_` — `(n_classes,)` empirical class priors.
+
+#### Performance notes
+
+- Fit = 2 reduction kernels (per-threadgroup partials + deterministic combine) in one command buffer, then a host pass deriving means/variances/priors.
+- Predict = 1 kernel computing all per-class log posteriors (`n × k`), with argmax / softmax on the host.
+- Shared-memory bound: fit requires `(2·d + 1)·k` floats of threadgroup memory (32 KB cap on Apple Silicon).
+
+## NMF API
+
+Non-negative Matrix Factorization (`V ≈ W·H`, both ≥ 0) via Lee–Seung
+multiplicative updates. Every O(N·D·K) step is a Metal matmul.
+
+### Functional API: `metal_nmf_fit`
+
+```python
+from metal_operators import metal_nmf_fit
+
+components, coeff, reconstruct_err, n_iter = metal_nmf_fit(
+    data, n, d, n_components,
+    max_iterations=200, tolerance=1e-4, seed=42
+)
+```
+
+- `data` — flat row-major, **non-negative** `float32` matrix.
+- `n` / `d` — number of rows / columns.
+- `n_components` — latent rank `K`.
+- Returns fitted `components` (H, K×D), `coeff` (W, N×K), the Frobenius
+  reconstruction error `‖V − W·H‖_F`, and the iteration count.
+- A `metal_nmf_fit_bytes` variant accepts a `memoryview`/`bytes` buffer
+  (raw little-endian float32) for zero-copy numpy inputs.
+- Raises `RuntimeError` on negative data values or invalid shapes.
+
+### `MetalNMF` (sklearn-style class)
+
+```python
+from metal_operators import MetalNMF
+
+nmf = MetalNMF(n_components=8, max_iterations=200, tolerance=1e-4, seed=42)
+nmf.fit(data, n, d)                     # returns None
+w_new = nmf.transform(held_out, m, d)   # latent representation of new data
+```
+
+#### Methods
+
+- `fit(data, n, d) -> None` — run multiplicative updates.
+- `fit_bytes(data, n, d) -> None` — buffer-protocol variant.
+- `transform(data, n, d) -> np.ndarray[float32]` — project new data into
+  latent space (solves `X ≈ W_new·H` with `H` fixed).
+- `transform_bytes(data, n, d) -> np.ndarray[float32]` — buffer variant.
+
+#### Properties
+
+- `components` — `(K, D)` fitted basis (H).
+- `coeff` — `(N, K)` coefficient matrix (W) of the training data.
+- `reconstruction_error` — `‖V − W·H‖_F`.
+- `n_iter` — iterations run by the last `fit`.
+
+## t-SNE API
+
+### Functional API: `metal_tsne`
+
+```python
+from metal_operators import metal_tsne
+
+embedding, n_iter, kl = metal_tsne(
+    data, n, d,
+    n_components=2, perplexity=30.0, learning_rate=200.0,
+    n_iter=1000, early_exaggeration=12.0, exaggeration_iter=250,
+    momentum=0.8, seed=42, min_grad_norm=1e-7,
+)
+```
+
+- `data` — flat row-major `float32` matrix of shape `(n, d)`.
+- `n_components` — embedding dimension (1..8; 2 is the classic choice).
+- `perplexity` — target perplexity; must satisfy `1 <= perplexity < n`.
+- Returns the fitted `(n, n_components)` `embedding`, the number of `n_iter`
+  iterations actually run, and the final divergences `kl`.
+- Early exaggeration (`early_exaggeration` x `P` for `exaggeration_iter`
+  iterations) matches scikit-learn. `seed` makes runs reproducible.
+- A `metal_tsne_fit_bytes` variant accepts a `memoryview`/`bytes` buffer
+  (raw little-endian float32) for zero-copy numpy inputs.
+- Raises `RuntimeError` on invalid shapes/parameters.
+
+### `MetalTSNE` (sklearn-style class)
+
+```python
+from metal_tsne import MetalTSNE
+
+tsne = MetalTSNE(n_components=2, perplexity=30.0, n_iter=1000, seed=42)
+Y = tsne.fit_transform(data)   # (n, 2) embedding as float32 ndarray
+print(tsne.kl_divergence_)
+```
+
+#### Methods
+
+- `fit(data, n=None, d=None) -> MetalTSNE` — fit; infers `(n, d)` from shape.
+- `fit_transform(data, n=None, d=None) -> np.ndarray[float32]` — fit and return
+  the embedding.
+
+#### Properties
+
+- `embedding_` — `(n, n_components)` low-dimensional embedding (float32).
+- `n_iter_` — iterations run by the last `fit`.
+- `kl_divergence_` — final KL(P‖Q) of the embedding.
+
+#### GPU breakdown
+
+The exact, per-iteration squared-L2 distance / affinity gradient kernels
+(`tsne_distances`, `tsne_perplexity`, `tsne_grad` in `shaders/tsne.metal`)
+offload the two dominant O(N²) costs — building the pairwise affinities and the
+per-iteration gradient — onto the Metal GPU. The `O(N)` momentum update stays
+on the CPU. This is the largest-lift operator: exact t-SNE otherwise spends
+all of its time in these quadratic loops.

@@ -60,6 +60,51 @@ def metal_kneighbors_bytes(
     n_neighbors: int = 5,
 ) -> Tuple[List[float], List[int]]: ...
 
+class MetalLDA:
+    def __init__(self, n_components: int) -> None: ...
+    def fit(self, data: List[float], labels: List[float], n: int, d: int) -> None: ...
+    def transform(self, data: List[float], n: int, d: int) -> List[float]: ...
+    def fit_transform(self, data: List[float], labels: List[float], n: int, d: int) -> List[float]: ...
+    def predict(self, data: List[float], n: int, d: int) -> List[int]: ...
+    def score(self, data: List[float], labels: List[float], n: int, d: int) -> float: ...
+    def fit_bytes(self, data: bytes, labels: bytes, n: int, d: int) -> None: ...
+    def transform_bytes(self, data: bytes, n: int, d: int) -> List[float]: ...
+    def fit_transform_bytes(self, data: bytes, labels: bytes, n: int, d: int) -> List[float]: ...
+    def predict_bytes(self, data: bytes, n: int, d: int) -> List[int]: ...
+    def score_bytes(self, data: bytes, labels: bytes, n: int, d: int) -> float: ...
+    @property
+    def scalings(self) -> List[float]: ...
+    @property
+    def coeffs(self) -> List[float]: ...
+    @property
+    def mean(self) -> List[float]: ...
+    @property
+    def eigenvalues(self) -> List[float]: ...
+    @property
+    def classes(self) -> List[float]: ...
+    @property
+    def class_counts(self) -> List[float]: ...
+    @property
+    def class_means(self) -> List[float]: ...
+    @property
+    def n_components(self) -> int: ...
+
+def metal_lda_fit(
+    data: List[float],
+    labels: List[float],
+    n: int,
+    d: int,
+    n_components: int,
+) -> Tuple[List[float], List[float], List[float]]: ...
+
+def metal_lda_fit_bytes(
+    data: bytes,
+    labels: bytes,
+    n: int,
+    d: int,
+    n_components: int,
+) -> Tuple[List[float], List[float], List[float]]: ...
+
 class MetalPCA:
     def __init__(self, n_components: int) -> None: ...
     def fit(self, data: List[float], n: int, d: int) -> None: ...
@@ -94,6 +139,58 @@ def metal_pca_fit_bytes(
     d: int,
     n_components: int,
 ) -> Tuple[List[float], List[float], List[float]]: ...
+
+class MetalTSNE:
+    def __init__(
+        self,
+        n_components: int = 2,
+        perplexity: float = 30.0,
+        learning_rate: float = 200.0,
+        n_iter: int = 1000,
+        early_exaggeration: float = 12.0,
+        exaggeration_iter: int = 250,
+        momentum: float = 0.8,
+        seed: int = 42,
+        min_grad_norm: float = 1e-7,
+    ) -> None: ...
+    def fit(self, data: List[float], n: int, d: int) -> None: ...
+    def fit_bytes(self, data: bytes, n: int, d: int) -> None: ...
+    @property
+    def embedding(self) -> List[float]: ...
+    @property
+    def n_iter(self) -> int: ...
+    @property
+    def kl_divergence(self) -> float: ...
+
+def metal_tsne_fit(
+    data: List[float],
+    n: int,
+    d: int,
+    n_components: int = 2,
+    perplexity: float = 30.0,
+    learning_rate: float = 200.0,
+    n_iter: int = 1000,
+    early_exaggeration: float = 12.0,
+    exaggeration_iter: int = 250,
+    momentum: float = 0.8,
+    seed: int = 42,
+    min_grad_norm: float = 1e-7,
+) -> Tuple[List[float], int, float]: ...
+
+def metal_tsne_fit_bytes(
+    data: bytes,
+    n: int,
+    d: int,
+    n_components: int = 2,
+    perplexity: float = 30.0,
+    learning_rate: float = 200.0,
+    n_iter: int = 1000,
+    early_exaggeration: float = 12.0,
+    exaggeration_iter: int = 250,
+    momentum: float = 0.8,
+    seed: int = 42,
+    min_grad_norm: float = 1e-7,
+) -> Tuple[List[float], int, float]: ...
 
 class MetalLogisticRegression:
     def __init__(

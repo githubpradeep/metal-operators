@@ -378,6 +378,285 @@ fn run() -> anyhow::Result<()> {
 
 ---
 
+## `dbscan::DBSCANConfig`
+
+```rust ignore
+pub struct DBSCANConfig {
+    pub eps: f32,
+    pub min_samples: usize,
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `eps` | `0.5` | Radius of the ε-neighborhood (must be `> 0`). |
+| `min_samples` | `5` | Minimum number of points (including the point itself) within `eps` for a point to be a core point (must be `>= 1`). |
+
+## `dbscan::DBSCAN`
+
+DBSCAN density-based clustering. The expensive ε-neighborhood computation is
+done on the GPU with the `dbscan_count` / `dbscan_gather` kernels
+(`shaders/dbscan.metal`), which reuse the same squared-L2 distance approach as
+the KNN distance kernels (`shaders/knn.metal`) but enumerate every neighbor
+within `eps` (no per-query `k` cap, so connectivity is exact). Core-point
+detection, mutual-core union-find and border/noise labelling run on the CPU.
+
+Labels follow scikit-learn conventions: `-1` = noise, `0..n_clusters-1` =
+cluster ids assigned in first-appearance order.
+
+```rust ignore
+pub struct DBSCAN { /* private fields */ }
+```
+
+### `DBSCAN::new(config: DBSCANConfig) -> Self`
+
+Construct a new DBSCAN clusterer. No GPU work is performed until `fit`.
+
+### `fit(&mut self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<()>`
+
+Fits the model:
+
+1. Validates `n > 0`, `d > 0`, `eps > 0`, `min_samples >= 1` and
+   `data.len() == n * d`.
+2. GPU pass A (`dbscan_count`): counts, for each point, the number of *other*
+   points within `eps`.
+3. CPU prefix-sum over the counts to build CSR offsets; GPU pass B
+   (`dbscan_gather`) fills the compact neighbor lists.
+4. Core points: `count + 1 (self) >= min_samples`.
+5. Union-find over core points connected by ε-adjacency (exact graph), then
+   border points join the first core neighbor's cluster.
+
+### Accessors
+
+```rust ignore
+impl DBSCAN {
+    pub fn labels(&self) -> &[isize];     // cluster id or -1 (noise)
+    pub fn n_clusters(&self) -> usize;    // number of clusters found
+}
+```
+
+### Example
+
+```rust ignore
+use metal_operators::dbscan::{DBSCAN, DBSCANConfig};
+use metal_operators::metal::MetalContext;
+
+fn run() -> anyhow::Result<()> {
+    let ctx = MetalContext::new()?;
+    let (n, d) = (100, 2);
+    let data = vec![0.0f32; n * d];
+
+    let mut db = DBSCAN::new(DBSCANConfig { eps: 0.5, min_samples: 5 });
+    db.fit(&ctx, &data, n, d)?;
+    println!("clusters: {}", db.n_clusters());
+    println!("labels:   {:?}", db.labels());
+    Ok(())
+}
+```
+
+---
+
+## `tsne::TSNEConfig`
+
+```rust ignore
+pub struct TSNEConfig {
+    pub n_components: usize,
+    pub perplexity: f32,
+    pub learning_rate: f32,
+    pub n_iter: usize,
+    pub early_exaggeration: f32,
+    pub exaggeration_iter: usize,
+    pub momentum: f32,
+    pub seed: u64,
+    pub min_grad_norm: f32,
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `n_components` | `2` | Embedding dimensions (1..=8; the GPU kernel loops over this bounded range). |
+| `perplexity` | `30.0` | Target perplexity; must satisfy `1 <= perplexity < n_samples`. |
+| `learning_rate` | `200.0` | Gradient-descent step size (must be `> 0`). |
+| `n_iter` | `1000` | Number of gradient descent iterations. |
+| `early_exaggeration` | `12.0` | Multiplier applied to `P` for the first `exaggeration_iter` iterations (`>= 1.0`; `1.0` disables). |
+| `exaggeration_iter` | `250` | Number of early-exaggeration iterations. |
+| `momentum` | `0.8` | Velocity (momentum) coefficient. |
+| `seed` | `42` | Seed for the Gaussian (`0, 1e-4`) embedding initialization. |
+| `min_grad_norm` | `1e-7` | Early-stopping threshold on the gradient L2 norm; `0.0` disables. |
+
+## `tsne::TSNE`
+
+t-SNE nonlinear dimensionality reduction / embedding (scikit-learn `exact`
+semantics: `P = (P_{j|i} + P_{i|j}) / (2N)` with a zero diagonal, early
+exaggeration of `P`, random Gaussian init, and the classic velocity momentum
+update `v ← momentum·v − lr·grad; Y ← Y + v`).
+
+The two dominant exact-t-SNE costs are GPU-accelerated in `shaders/tsne.metal`:
+
+1. **Pairwise affinity `P` (O(N²·D), once).** `tsne_distances` computes the full
+   squared-L2 distance matrix; `tsne_perplexity` runs the per-row perplexity
+   bisection over `log(σ)` in parallel (one thread per sample, an
+   embarrassingly-parallel workload).
+2. **Gradient (O(N²), per iteration).** `tsne_grad` computes every sample's
+   gradient in parallel — one thread per point, so there are no intra-kernel
+   races. The `÷Z` Student-t normalization is folded in on the host, and the
+   O(N) momentum update runs on the CPU.
+
+```rust ignore
+pub struct TSNE { /* private fields */ }
+```
+
+### `TSNE::new(config: TSNEConfig) -> Self`
+
+Construct a new t-SNE embedding operator. No GPU work is performed until `fit`.
+
+### `fit(&mut self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<()>`
+
+Fits the embedding:
+
+1. Validates `n > 1`, `d > 0`, `1 <= n_components <= 8`,
+   `1 <= perplexity < n`, `learning_rate > 0`, `early_exaggeration >= 1.0` and
+   `data.len() == n * d`.
+2. GPU `tsne_distances` → full N×N distance matrix.
+3. GPU `tsne_perplexity` → conditional `P_{j|i}`, then symmetrized/normalized
+   on the host: `P = (P_{j|i} + P_{i|j}) / (2N)`.
+4. Random Gaussian embedding init (seeded; deterministic), then
+   `n_iter` gradient iterations. Early stopping triggers when the gradient L2
+   norm drops below `min_grad_norm`.
+5. Final KL(P‖Q) is computed on the host for diagnostics.
+
+### Accessors
+
+```rust ignore
+impl TSNE {
+    pub fn embedding(&self) -> &[f32];    // (n, n_components) row-major
+    pub fn n_iter(&self) -> usize;        // iterations actually run
+    pub fn kl_divergence(&self) -> f32;   // final KL(P ‖ Q)
+}
+```
+
+### Example
+
+```rust ignore
+use metal_operators::metal::MetalContext;
+use metal_operators::tsne::{TSNE, TSNEConfig};
+
+fn run() -> anyhow::Result<()> {
+    let ctx = MetalContext::new()?;
+    let (n, d) = (200, 8);
+    let data = vec![0.0f32; n * d];
+
+    let mut tsne = TSNE::new(TSNEConfig {
+        n_components: 2,
+        perplexity: 30.0,
+        n_iter: 500,
+        ..Default::default()
+    });
+    tsne.fit(&ctx, &data, n, d)?;
+    println!("embedding: {}×{}", n, tsne.embedding().len() / n);
+    println!("KL(P‖Q):   {}", tsne.kl_divergence());
+    Ok(())
+}
+```
+
+---
+
+## `nmf::NMFConfig`
+
+Configuration for Non-negative Matrix Factorization (multiplicative updates).
+
+```rust
+pub struct NMFConfig {
+    pub n_components: usize,     // latent rank K (clamped to input n/d)
+    pub max_iterations: usize,   // multiplicative-update iteration limit
+    pub tolerance: f32,          // early stop: relative Frobenius change of W
+    pub seed: u64,               // RNG seed for the non-negative init
+    pub eps: f32,                // guard against division by zero
+}
+```
+
+Implements `Default`:
+
+| Field | Default |
+|---|---|
+| `n_components` | `2` |
+| `max_iterations` | `200` |
+| `tolerance` | `1e-4` |
+| `seed` | `42` |
+| `eps` | `1e-10` |
+
+---
+
+## `nmf::NMF`
+
+Non-negative matrix factorization: `V (N×D) ≈ W·H` with `W (N×K)` and
+`H (K×D)` both ≥ 0. Every O(N·D·K) step is a Metal matmul (see
+`shaders/nmf.metal`): a generic `nmf_mm` kernel (with a per-operand
+transpose flag) computes `Wᵀ·V`, `Wᵀ·W`, `Wᵀ·W·H`, `V·Hᵀ`, `H·Hᵀ` and
+`W·H·Hᵀ`, while `nmf_update` applies the Lee–Seung multiplicative rule in
+place and `nmf_diff` computes the reconstruction residuals.
+
+```rust
+pub struct NMF { /* private fields */ }
+```
+
+### `NMF::new(config: NMFConfig) -> Self`
+
+Construct a new solver. No GPU work is performed until `fit` is called.
+
+### `fit(&mut self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<()>`
+
+Run the Lee–Seung multiplicative updates.
+
+| Param | Desc |
+|---|---|
+| `data` | Flat row-major, **non-negative** matrix: `data[i * d + j]`. Length `n * d`. |
+| `n` | Number of rows (samples). |
+| `d` | Number of columns (features). |
+
+Validates `n > 0`, `d > 0`, `data.len() == n * d`, and that every entry is
+non-negative.
+
+### `transform(&mut self, ctx, data: &[f32], n, d) -> anyhow::Result<Vec<f32>>`
+
+Project new (non-negative) data into the latent space: solve `X ≈ W_new·H`
+with the fitted components `H` fixed (multiplicative updates on `W_new`).
+Returns the non-negative coefficient matrix `W_new`, length `n * k`.
+
+### Accessors
+
+- `components() -> &[f32]` — fitted basis `H` (K×D).
+- `coeff() -> &[f32]` — coefficient matrix `W` (N×K) of the training data.
+- `reconstruction_error() -> f32` — `‖V − W·H‖_F`.
+- `n_iter() -> usize` — iterations run by the last `fit`.
+- `n_samples() -> usize`, `n_features() -> usize`.
+
+### Example
+
+```rust ignore
+use metal_operators::metal::MetalContext;
+use metal_operators::nmf::{NMF, NMFConfig};
+
+fn run() -> anyhow::Result<()> {
+    let ctx = MetalContext::new()?;
+    let (n, d, k) = (1000usize, 200usize, 8usize);
+    let v = vec![1.0f32; n * d]; // non-negative data
+
+    let mut nmf = NMF::new(NMFConfig {
+        n_components: k,
+        max_iterations: 200,
+        tolerance: 1e-4,
+        seed: 42,
+        eps: 1e-10,
+    });
+    nmf.fit(&ctx, &v, n, d)?;
+    println!("recon error: {:.4}", nmf.reconstruction_error());
+    Ok(())
+}
+```
+
+---
+
 ## Complete example
 
 ```rust ignore

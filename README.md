@@ -1,6 +1,6 @@
 # metal-operators
 
-GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **Logistic Regression**, and **Linear Regression** via Apple Metal.
+GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **LDA**, **Logistic Regression**, **Linear Regression**, and **Gaussian Naive Bayes** via Apple Metal.
 
 **KMeans** uses 5 kernel variants (simdgroup, split-D, tiled centroid) to run Lloyd's
 algorithm entirely on GPU — no CPU readback inside the loop.
@@ -17,6 +17,13 @@ shared-memory Gram kernel (D ≤ 128) and a chunked Xᵀy/column-sum kernel buil
 the augmented system, a deterministic reduction combines per-group partials,
 and the (D+1)² system is solved on the host — matching sklearn's `cholesky`
 solver with optional L2 ridge.
+
+**LDA** is a supervised linear dimensionality-reduction: a single batched
+GPU scatter (Gram) kernel computes `Xᵀ·X`, the within/between-class scatter
+matrices are assembled from it on the host, and the small symmetric
+generalized eigenproblem `S_w⁻¹·S_b` is solved via whitening (Accelerate
+`ssyevd`) to yield the top-k discriminant axes + a nearest-class-center
+classifier.
 
 ```python
 from metal_kmeans import metal_kmeans, MetalKMeans, metal_kneighbors, MetalKNeighbors
@@ -68,6 +75,8 @@ python3 examples/pca_eigenfaces.py         # PCA: eigenfaces reconstruction
 python3 examples/logistic_regression_example.py  # LogisticRegression: smoke test + benchmark
 python3 examples/linear_regression_example.py    # LinearRegression: smoke test + benchmark
 python3 examples/diabetes_regression.py          # LinearRegression: real diabetes data (442×10)
+python3 examples/lda_example.py                  # LDA: supervised dimensionality reduction
+python3 examples/tsne_example.py                 # t-SNE: nonlinear embedding (largest-lift)
 ```
 
 ### PCA
@@ -95,6 +104,38 @@ transformed = pca.transform(X)         # (n, k) projection
 # Reconstruction
 X_recon = transformed @ components
 recon_error = np.mean((X - X_recon)**2)
+```
+
+### LDA
+
+Supervised linear dimensionality reduction (sklearn-style
+`LinearDiscriminantAnalysis`). A batched GPU scatter kernel computes the Gram
+matrix `Xᵀ·X`; the within-class (`S_w`) and between-class (`S_b`) scatter
+matrices are assembled on the host, and the top-k axes of the generalized
+eigenproblem `S_w⁻¹·S_b` are found via whitening (Accelerate `ssyevd`).
+`predict`/`score` classify by nearest projected class center.
+
+```python
+from metal_lda import MetalLDA
+import numpy as np
+
+# 3 Gaussian classes, 12 features, 2 informative directions
+rng = np.random.RandomState(42)
+n, d, k = 600, 12, 2
+X = rng.randn(n, d).astype(np.float32)
+y = np.concatenate([np.full(200, c, np.float32) for c in (0, 1, 2)])
+X[y == 1, 0] += 4.0
+X[y == 2, 1] += 4.0
+
+# sklearn-style API
+lda = MetalLDA(n_components=k)
+lda.fit(X, y)
+
+scalings = lda.scalings_              # (k, d) discriminant axes
+evals = lda.eigenvalues_              # (k,) discriminative power (descending)
+transformed = lda.transform(X)        # (n, k) projection
+preds = lda.predict(X)                # class indices 0..C-1
+acc = lda.score(X, y)                 # accuracy
 ```
 
 ### Logistic Regression
@@ -186,6 +227,41 @@ r2 = reg.score(X, y, n, d)       # coefficient of determination (R²)
 `Ridge` convention); `fit_intercept=False` drops the bias column from the
 augmented system. `max_iterations`, `tol` and `seed` are accepted for API
 symmetry with flashlib but are unused by the closed-form solver.
+
+### Gaussian Naive Bayes
+
+Gaussian Naive Bayes (multiclass, sklearn `GaussianNB` conventions): a GPU
+reduction pass computes the per-class feature sum and sum-of-squares in one
+CPU↔GPU sync (two kernels — per-threadgroup partials, then a deterministic
+fixed-order combine — no device atomics), after which the host derives
+per-class means, variances (with `var_smoothing`), and empirical priors. A
+dedicated predict kernel computes per-class log posteriors; the host applies
+the argmax (`predict`) and the log-sum-exp softmax (`predict_log_proba` /
+`predict_proba`).
+
+```python
+from metal_gaussian_nb import metal_gaussian_nb_fit, MetalGaussianNB
+import numpy as np
+
+# Synthetic 3-class data (separable means)
+rng = np.random.RandomState(0)
+n, d, k = 300, 4, 3
+X = rng.randn(n, d).astype(np.float32)
+y = (rng.randint(0, k, n)).astype(np.float32)
+X += y[:, None] * 2.0  # shift classes apart
+
+# sklearn-style API — fit needs n_classes
+clf = MetalGaussianNB()
+clf.fit(X.ravel().tolist(), y.tolist(), n, d, n_classes=k)
+
+# Access results
+theta = clf.theta_         # (k, d) per-class means
+var = clf.var_             # (k, d) per-class variances
+prior = clf.class_prior_   # (k,) empirical priors
+proba = clf.predict_proba(X, n, d)  # (n, k) class probabilities
+preds = clf.predict(X, n, d)        # (n,) predicted labels
+acc = clf.score(X, y, n, d)         # mean accuracy
+```
 
 ## Requirements
 
@@ -339,6 +415,19 @@ let preds = lr.predict(&ctx, &data, n, d)?;
 println!("R²:      {}", lr.score(&ctx, &data, &y, n, d)?);
 ```
 
+```rust
+use metal_operators::naive_bayes::{GaussianNB, GaussianNBConfig};
+
+let ctx = MetalContext::new()?;
+// `y` holds class ids in [0, n_classes); k = 3 classes here.
+let mut nb = GaussianNB::new(GaussianNBConfig { var_smoothing: 1e-9 });
+nb.fit(&ctx, &data, &y, n, d, 3)?;
+println!("means: {:?}", nb.means());
+let preds = nb.predict(&ctx, &data, n, d)?;          // argmax class per sample
+let proba = nb.predict_proba(&ctx, &data, n, d)?;    // (n, k) softmax rows
+let acc = nb.score(&ctx, &data, &y, n, d)?;          // mean accuracy
+```
+
 ## Tests
 
 ```sh
@@ -357,6 +446,8 @@ KNN test matrix: D = {3, 8, 16, 32}, K = {1, 3, 5, 10}, covering Dense, Splitm, 
 PCA test matrix: 12 tests covering cov path (N≥D), Gram path (N<D), explained variance ordering, orthonormal components, reconstruction accuracy, single-component edge case, and transform output shape.
 
 Linear regression test matrix: 10 tests covering recovery of known coefficients, R² accuracy vs CPU reference, ridge shrinkage, no-intercept mode, singular data, determinism, and kernel dispatch sweep (D = {2, 3, 8, 16, 64, 128, 256}).
+
+Gaussian NB test matrix: CPU-reference validation of per-class means/variances from the GPU reduction pass (single-group, multi-group >128 samples, and 3-class), and classification accuracy + probability-normalization checks for the predict kernel.
 
 ## Benchmarks
 
@@ -449,24 +540,27 @@ Centroid update: GPU (`kmeans_centroid_tiled`) when `(K×D+K)×4 ≤ 32 KB`, els
 ```
 src/
 ├── lib.rs               – crate root + PyO3 pymodule entry
-├── python.rs             – PyO3 bindings (KMeans, KNN, PCA, LogisticRegression, LinearRegression)
+├── python.rs             – PyO3 bindings (KMeans, KNN, PCA, LogisticRegression, LinearRegression, GaussianNB)
 ├── metal/mod.rs          – MetalContext: device, queue, buffer helpers
 ├── kmeans/mod.rs         – KMeans, assign kernel picker, centroid dispatch
 ├── knn/mod.rs            – KNN, 3 kernel variants, buffer reuse
 ├── pca/mod.rs            – PCA: GPU Gram matrix + CPU eigh (Jacobi / Accelerate)
 ├── logistic_regression/mod.rs – LogisticRegression: fused fwd/bwd/loss kernels + L-BFGS
-└── linear_regression/mod.rs   – LinearRegression: tiled Gram + chunked Xᵀy + host solve
+├── linear_regression/mod.rs   – LinearRegression: tiled Gram + chunked Xᵀy + host solve
+└── naive_bayes/mod.rs    – GaussianNB: per-class sum/sumsq reduction + log-posterior predict kernel
 python/
 ├── metal_kmeans/__init__.py  – KMeans + KNN Python API
 ├── metal_pca/__init__.py     – PCA Python API
 ├── metal_logistic_regression/__init__.py – LogisticRegression Python API
-└── metal_linear_regression/__init__.py   – LinearRegression Python API
+├── metal_linear_regression/__init__.py   – LinearRegression Python API
+└── metal_gaussian_nb/__init__.py         – GaussianNB Python API
 shaders/
 ├── kmeans.metal          – 5 Metal kernels (3 assign, 1 init, 1 centroid tiled)
 ├── knn.metal             – 4 Metal kernels (3 assign, 1 gather)
 ├── pca.metal             – 6 Metal kernels (mean, center, transpose, matmul, transform)
 ├── logistic.metal        – 4 Metal kernels (3 fused fwd/bwd, 1 predict)
-└── linear.metal          – 5 Metal kernels (2 XᵀX, 1 Xᵀy, 1 reduce, 1 predict)
+├── linear.metal          – 5 Metal kernels (2 XᵀX, 1 Xᵀy, 1 reduce, 1 predict)
+└── naive_bayes.metal     – 3 Metal kernels (reduce partials, reduce sum, predict logp)
 examples/
 ├── example.py            – KMeans smoke test + benchmark
 ├── knn_example.py        – KNN benchmark across shapes

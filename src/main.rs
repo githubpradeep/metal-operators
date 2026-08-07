@@ -1,7 +1,9 @@
+use metal_operators::dbscan::{DBSCANConfig, DBSCAN};
 use metal_operators::kmeans::{KMeans, KMeansConfig};
-use metal_operators::knn::{KNN, KNNConfig};
+use metal_operators::knn::{KNNConfig, KNN};
 use metal_operators::metal::MetalContext;
-use metal_operators::pca::{PCA, PCAConfig};
+use metal_operators::nmf::{NMFConfig, NMF};
+use metal_operators::pca::{PCAConfig, PCA};
 
 fn main() -> anyhow::Result<()> {
     let ctx = MetalContext::new()?;
@@ -62,7 +64,10 @@ fn main() -> anyhow::Result<()> {
             let idx = indices[j] as usize;
             println!(
                 "  Index {}: pos=({:.2}, {:.2}), dist={:.4}",
-                idx, data[idx * d], data[idx * d + 1], distances[j]
+                idx,
+                data[idx * d],
+                data[idx * d + 1],
+                distances[j]
             );
         }
     }
@@ -93,15 +98,97 @@ fn main() -> anyhow::Result<()> {
         println!("Data: {} points, {} dimensions", n, d);
         println!("Components ({} principal axes):", k);
         for (i, component) in pca.components().chunks(d).enumerate() {
-            let comp_str: Vec<String> =
-                component.iter().take(4).map(|v| format!("{:.4}", v)).collect();
+            let comp_str: Vec<String> = component
+                .iter()
+                .take(4)
+                .map(|v| format!("{:.4}", v))
+                .collect();
             println!("  PC{}: [{}, ...]", i + 1, comp_str.join(", "));
         }
         println!("Explained variance: {:?}", pca.explained_variance());
-        println!("Explained variance ratio: {:?}", pca.explained_variance_ratio());
+        println!(
+            "Explained variance ratio: {:?}",
+            pca.explained_variance_ratio()
+        );
 
         let transformed = pca.transform(&ctx, &data, n, d)?;
         println!("Transformed shape: {} x {}", n, k);
+    }
+
+    // ── DBSCAN example ──
+    println!("\n=== DBSCAN Example (synthetic blobs + noise) ===");
+    {
+        let n = 40;
+        let d = 2;
+        let mut rng = fastrand::Rng::with_seed(42);
+        let mut data = Vec::with_capacity(n * d);
+        for i in 0..n {
+            let cx = if i % 2 == 0 { 0.0 } else { 10.0 };
+            let cy = if i % 2 == 0 { 0.0 } else { 10.0 };
+            data.push(cx + (rng.f32() - 0.5) * 1.2);
+            data.push(cy + (rng.f32() - 0.5) * 1.2);
+        }
+        // one obvious outlier
+        data.push(50.0);
+        data.push(50.0);
+        let n = n + 1;
+
+        let mut db = DBSCAN::new(DBSCANConfig {
+            eps: 2.0,
+            min_samples: 4,
+        });
+        db.fit(&ctx, &data, n, d)?;
+        println!("Clusters found: {}", db.n_clusters());
+        println!("Labels: {:?}", db.labels());
+    }
+
+    // ── NMF example ──
+    println!("\n=== NMF Example (non-negative synthetic matrix) ===");
+    {
+        let n = 500;
+        let d = 40;
+        let k = 4;
+        let mut rng = fastrand::Rng::with_seed(7);
+        // Build a low-rank non-negative matrix V = W_true · H_true + noise.
+        let mut w_true = Vec::with_capacity(n * k);
+        for _ in 0..n * k {
+            w_true.push(rng.f32());
+        }
+        let mut h_true = Vec::with_capacity(k * d);
+        for _ in 0..k * d {
+            h_true.push(rng.f32());
+        }
+        let mut v = vec![0.0f32; n * d];
+        for i in 0..n {
+            for j in 0..d {
+                let mut s = 0.0f32;
+                for c in 0..k {
+                    s += w_true[i * k + c] * h_true[c * d + j];
+                }
+                v[i * d + j] = s + rng.f32() * 0.01; // small non-negative noise
+            }
+        }
+        println!("V: {} x {}, rank {}", n, d, k);
+
+        let mut nmf = NMF::new(NMFConfig {
+            n_components: k,
+            max_iterations: 200,
+            tolerance: 1e-5,
+            seed: 42,
+            eps: 1e-10,
+        });
+        nmf.fit(&ctx, &v, n, d)?;
+        println!(
+            "Reconstruction error (Frobenius): {:.6} after {} iters",
+            nmf.reconstruction_error(),
+            nmf.n_iter()
+        );
+        println!("Components (H): shape {} x {}", k, d);
+
+        // Transform a small held-out slice back into latent space.
+        let held = &v[..100 * d];
+        let latent = nmf.transform(&ctx, held, 100, d)?;
+        println!("Transformed (held-out) shape: 100 x {}", latent.len() / 100);
     }
 
     Ok(())
