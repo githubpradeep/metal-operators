@@ -686,3 +686,127 @@ fn run() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+---
+
+## `gmm::GMMConfig`
+
+Configuration for the Gaussian Mixture Model (full covariance, EM).
+
+```rust
+pub struct GMMConfig {
+    pub n_components: usize,   // number of mixture components (clusters)
+    pub max_iterations: usize, // EM iteration limit
+    pub tolerance: f32,        // convergence: |Δ avg log-likelihood| < tol
+    pub seed: u64,             // seed for the k-means++ init PRNG
+    pub reg_covar: f32,        // diagonal regularization for covariance (>= 0)
+}
+```
+
+Implements `Default`:
+
+| Field | Default |
+|---|---|
+| `n_components` | `3` |
+| `max_iterations` | `100` |
+| `tolerance` | `1e-3` |
+| `seed` | `42` |
+| `reg_covar` | `1e-6` |
+
+---
+
+## `gmm::GMM`
+
+Gaussian Mixture Model fitted with GPU-accelerated Expectation-Maximization,
+mirroring `sklearn.mixture.GaussianMixture` (full covariance, EM loop,
+k-means++ init). See `shaders/gmm.metal`.
+
+The EM iteration structure:
+
+1. **Init.** k-means++ selects `n_components` seed means; each component's
+   covariance starts as the empirical covariance of its nearest points
+   (falling back to the global covariance for empty/small clusters), plus
+   `reg_covar` on the diagonal.
+2. **E-step (GPU).** `gmm_e_step` computes the (n × k) log-likelihood matrix
+   `L[i][c] = log w_c − ½(d log 2π + log|Σ_c| + (xᵢ−μ_c)ᵀ Σ_c⁻¹ (xᵢ−μ_c))`
+   in a single launch. The host converts it to responsibilities
+   `r_ic = softmax_c(L_i)` and the average log-likelihood lower bound.
+3. **M-step (host).** Weights, means, and full covariances are re-estimated
+   from the responsibilities. A per-component Cholesky factorization rebuilds
+   the precision `Σ_c⁻¹` and `log|Σ_c|` for the next E-step (degenerate
+   covariances get progressively more diagonal regularization).
+4. **Loop** until `|lower_bound − previous| < tolerance` or `max_iterations`.
+
+```rust ignore
+pub struct GMM { /* private fields */ }
+```
+
+### `GMM::new(config: GMMConfig) -> Self`
+
+Construct a new Gaussian Mixture Model. No GPU work is performed until `fit`.
+
+### `fit(&mut self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<()>`
+
+Fits the mixture by EM:
+
+1. Validates `n > 0`, `d > 0`, `1 <= n_components <= n`, `tolerance >= 0`,
+   `reg_covar >= 0`, `max_iterations > 0`, and `data.len() == n * d`.
+2. k-means++ init (seeded; deterministic).
+3. Iterates E-step (GPU) / M-step (host) until convergence.
+
+### `predict`, `predict_proba`, `score`
+
+Each is a single GPU launch against the fitted parameters:
+
+```rust ignore
+impl GMM {
+    pub fn predict(&self, ctx: &MetalContext, data: &[f32], n: usize, d: usize)
+        -> anyhow::Result<Vec<usize>>; // hard component assignment (n,)
+    pub fn predict_proba(&self, ctx: &MetalContext, data: &[f32], n: usize, d: usize)
+        -> anyhow::Result<Vec<f32>>;    // responsibilities (n × k), rows sum to 1
+    pub fn score(&self, ctx: &MetalContext, data: &[f32], n: usize, d: usize)
+        -> anyhow::Result<f32>;         // average log-likelihood
+}
+```
+
+### Accessors
+
+```rust ignore
+impl GMM {
+    pub fn n_components(&self) -> usize;      // k
+    pub fn n_features(&self) -> usize;        // d
+    pub fn n_samples(&self) -> usize;         // n
+    pub fn weights(&self) -> &[f32];          // (k,)
+    pub fn means(&self) -> &[f32];            // (k, d) row-major
+    pub fn covariances(&self) -> &[f32];      // (k, d, d) row-major
+    pub fn precisions(&self) -> &[f32];       // (k, d, d) Σ⁻¹
+    pub fn responsibilities(&self) -> &[f32]; // (n, k) from last fit
+    pub fn lower_bound(&self) -> f32;         // avg log-likelihood lower bound
+    pub fn n_iter(&self) -> usize;            // EM iterations actually run
+}
+```
+
+### Example
+
+```rust ignore
+use metal_operators::metal::MetalContext;
+use metal_operators::gmm::{GMM, GMMConfig};
+
+fn run() -> anyhow::Result<()> {
+    let ctx = MetalContext::new()?;
+    let (n, d) = (600, 3);
+    let data = vec![0.0f32; n * d]; // three well-separated blobs
+
+    let mut gmm = GMM::new(GMMConfig {
+        n_components: 3,
+        max_iterations: 100,
+        tolerance: 1e-4,
+        seed: 42,
+        reg_covar: 1e-4,
+    });
+    gmm.fit(&ctx, &data, n, d)?;
+    println!("lower bound: {}", gmm.lower_bound());
+    println!("iterations:  {}", gmm.n_iter());
+    Ok(())
+}
+```

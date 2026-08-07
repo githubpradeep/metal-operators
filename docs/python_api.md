@@ -505,3 +505,74 @@ offload the two dominant O(N²) costs — building the pairwise affinities and t
 per-iteration gradient — onto the Metal GPU. The `O(N)` momentum update stays
 on the CPU. This is the largest-lift operator: exact t-SNE otherwise spends
 all of its time in these quadratic loops.
+
+---
+
+## GMM API
+
+Gaussian Mixture Model (full covariance, EM, k-means++ init) mirroring
+`sklearn.mixture.GaussianMixture`. The per-iteration E-step — the O(n·k·d²)
+log-likelihood matrix — runs on the GPU (`gmm_e_step` in `shaders/gmm.metal`);
+the M-step and the per-component Cholesky precision/logdet update run on the
+host.
+
+### Functional API: `metal_gmm`
+
+```python
+from metal_gmm import metal_gmm
+
+weights, means, covariances, responsibilities, lower_bound, n_iter = metal_gmm(
+    data, n, d, n_components=3, max_iterations=100, tolerance=1e-3, seed=42,
+    reg_covar=1e-6,
+)
+```
+
+Returns:
+
+- `weights` — `(k,)` mixture weights (sum to 1), float32
+- `means` — `(k, d)` component means, float32
+- `covariances` — `(k, d, d)` full covariance matrices, float32
+- `responsibilities` — `(n, k)` posteriors of the fitted data, float32
+- `lower_bound` — final average log-likelihood (float)
+- `n_iter` — EM iterations run (int)
+
+A `metal_gmm_fit_bytes` variant accepts a `memoryview`/`bytes` buffer instead
+of a list.
+
+### `MetalGMM` (sklearn-style class)
+
+```python
+from metal_gmm import MetalGMM
+
+gmm = MetalGMM(n_components=3, max_iterations=100, tolerance=1e-3, seed=42)
+gmm.fit(data, n=None, d=None)        # infers (n, d) from the array shape
+labels = gmm.predict(new_data)       # (n,) hard component assignment (intp)
+proba = gmm.predict_proba(new_data)  # (n, k) responsibilities, rows sum to 1
+ll = gmm.score(new_data)             # average log-likelihood
+```
+
+#### Methods
+
+- `fit(data, n=None, d=None) -> MetalGMM` — fit by EM; infers `(n, d)` from
+  shape.
+- `fit_predict(data, n=None, d=None) -> np.ndarray[intp]` — fit and return the
+  hard assignment.
+- `predict(data, n=None, d=None) -> np.ndarray[intp]` — most likely component.
+- `predict_proba(data, n=None, d=None) -> np.ndarray[float32]` — posterior
+  component probabilities.
+- `score(data, n=None, d=None) -> float` — average log-likelihood.
+
+#### Properties
+
+- `weights_` — `(k,)` fitted mixture weights.
+- `means_` — `(k, d)` fitted component means.
+- `covariances_` — `(k, d, d)` fitted full covariances.
+- `responsibilities_` — `(n, k)` posteriors of the training data.
+- `lower_bound_` — final average log-likelihood lower bound.
+- `n_iter_` — EM iterations run by the last `fit`.
+
+#### GPU breakdown
+
+`predict` / `predict_proba` / `score` are each a single GPU launch; `fit` runs
+one GPU launch per EM iteration (the E-step) with the M-step on the host —
+typically 2–30 iterations for well-behaved problems.

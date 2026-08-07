@@ -1,4 +1,5 @@
 pub mod dbscan;
+pub mod gmm;
 pub mod kmeans;
 pub mod knn;
 pub mod lda;
@@ -19,6 +20,10 @@ pub use python::metal_dbscan_fit;
 pub use python::metal_dbscan_fit_bytes;
 #[cfg(feature = "python")]
 pub use python::metal_gaussian_nb_fit;
+#[cfg(feature = "python")]
+pub use python::metal_gmm_fit;
+#[cfg(feature = "python")]
+pub use python::metal_gmm_fit_bytes;
 #[cfg(feature = "python")]
 pub use python::metal_kmeans_fit;
 #[cfg(feature = "python")]
@@ -43,6 +48,8 @@ pub use python::metal_tsne_fit;
 pub use python::metal_tsne_fit_bytes;
 #[cfg(feature = "python")]
 pub use python::PyMetalDBSCAN;
+#[cfg(feature = "python")]
+pub use python::PyMetalGMM;
 #[cfg(feature = "python")]
 pub use python::PyMetalGaussianNB;
 #[cfg(feature = "python")]
@@ -93,6 +100,9 @@ mod py_bridge {
         m.add_class::<python::PyMetalGaussianNB>()?;
         m.add_function(wrap_pyfunction!(python::metal_gaussian_nb_fit, m)?)?;
         m.add_function(wrap_pyfunction!(python::metal_gaussian_nb_fit_bytes, m)?)?;
+        m.add_class::<python::PyMetalGMM>()?;
+        m.add_function(wrap_pyfunction!(python::metal_gmm_fit, m)?)?;
+        m.add_function(wrap_pyfunction!(python::metal_gmm_fit_bytes, m)?)?;
         m.add_class::<python::PyMetalLinearRegression>()?;
         m.add_function(wrap_pyfunction!(python::metal_linear_regression_fit, m)?)?;
         m.add_function(wrap_pyfunction!(

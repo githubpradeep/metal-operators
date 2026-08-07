@@ -1,6 +1,6 @@
 # metal-operators
 
-GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **LDA**, **Logistic Regression**, **Linear Regression**, and **Gaussian Naive Bayes** via Apple Metal.
+GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **LDA**, **Logistic Regression**, **Linear Regression**, **Gaussian Naive Bayes**, and **Gaussian Mixture Models (GMM)** via Apple Metal.
 
 **KMeans** uses 5 kernel variants (simdgroup, split-D, tiled centroid) to run Lloyd's
 algorithm entirely on GPU — no CPU readback inside the loop.
@@ -77,6 +77,7 @@ python3 examples/linear_regression_example.py    # LinearRegression: smoke test 
 python3 examples/diabetes_regression.py          # LinearRegression: real diabetes data (442×10)
 python3 examples/lda_example.py                  # LDA: supervised dimensionality reduction
 python3 examples/tsne_example.py                 # t-SNE: nonlinear embedding (largest-lift)
+python3 examples/gmm_example.py                  # GMM: Gaussian mixture model (EM)
 ```
 
 ### PCA
@@ -261,6 +262,40 @@ prior = clf.class_prior_   # (k,) empirical priors
 proba = clf.predict_proba(X, n, d)  # (n, k) class probabilities
 preds = clf.predict(X, n, d)        # (n,) predicted labels
 acc = clf.score(X, y, n, d)         # mean accuracy
+```
+
+### Gaussian Mixture Model (GMM)
+
+Gaussian Mixture Model (full covariance, sklearn `GaussianMixture` semantics)
+fitted by Expectation-Maximization. k-means++ picks the seed means; each EM
+iteration's E-step — the O(n·k·d²) log-likelihood matrix — runs on the GPU
+(`gmm_e_step` in `shaders/gmm.metal`, one launch per iteration), while the host
+computes responsibilities, the M-step (weighted mean/covariance update), and
+the per-component Cholesky factorization that rebuilds `Σ⁻¹` and `log|Σ|`.
+`predict` / `predict_proba` / `score` are each a single GPU launch.
+
+```python
+from metal_gmm import MetalGMM, metal_gmm
+import numpy as np
+
+# Three well-separated blobs
+rng = np.random.RandomState(7)
+X = np.concatenate([
+    rng.randn(200, 3) + np.array([6, 0, 0]),
+    rng.randn(200, 3) + np.array([0, 6, 0]),
+    rng.randn(200, 3) + np.array([0, 0, 6]),
+]).astype(np.float32)
+
+# sklearn-style API
+gmm = MetalGMM(n_components=3, seed=42)
+gmm.fit(X)
+means = gmm.means_          # (3, 3) component means
+proba = gmm.predict_proba(X)  # (n, 3) responsibilities, rows sum to 1
+labels = gmm.predict(X)     # (n,) hard component assignment
+ll = gmm.score(X)           # average log-likelihood
+
+# Functional API — (weights, means, covariances, responsibilities, lb, n_iter)
+w, means, covs, resp, lb, iters = metal_gmm(X, *X.shape, n_components=3)
 ```
 
 ## Requirements

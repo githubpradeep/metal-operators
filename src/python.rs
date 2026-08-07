@@ -1,4 +1,5 @@
 use crate::dbscan::{DBSCANConfig, DBSCAN};
+use crate::gmm::{GMMConfig, GMM};
 use crate::kmeans::{KMeans, KMeansConfig};
 use crate::knn::{KNNConfig, KNN};
 use crate::lda::{LDAConfig, LDA};
@@ -1497,5 +1498,195 @@ pub fn metal_tsne_fit_bytes(
         tsne.embedding().to_vec(),
         tsne.n_iter(),
         tsne.kl_divergence(),
+    ))
+}
+
+// ── Gaussian Mixture Model (GMM) ─────────────────────────────────────────
+
+#[pyclass(name = "MetalGMM")]
+pub struct PyMetalGMM {
+    inner: GMM,
+}
+
+#[pymethods]
+impl PyMetalGMM {
+    #[new]
+    #[pyo3(signature = (n_components=3, max_iterations=100, tolerance=1e-3, seed=42, reg_covar=1e-6))]
+    fn new(
+        n_components: usize,
+        max_iterations: usize,
+        tolerance: f32,
+        seed: u64,
+        reg_covar: f32,
+    ) -> Self {
+        let config = GMMConfig {
+            n_components,
+            max_iterations,
+            tolerance,
+            seed,
+            reg_covar,
+        };
+        Self {
+            inner: GMM::new(config),
+        }
+    }
+
+    fn fit(&mut self, data: Vec<f32>, n: usize, d: usize) -> PyResult<()> {
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("GMM fit failed: {}", e)))
+    }
+
+    fn fit_bytes(&mut self, data: &[u8], n: usize, d: usize) -> PyResult<()> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("GMM fit failed: {}", e)))
+    }
+
+    fn predict(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map(|p| p.into_iter().map(|v| v as f32).collect())
+            .map_err(|e| PyRuntimeError::new_err(format!("GMM predict failed: {}", e)))
+    }
+
+    fn predict_bytes(&self, data: &[u8], n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map(|p| p.into_iter().map(|v| v as f32).collect())
+            .map_err(|e| PyRuntimeError::new_err(format!("GMM predict failed: {}", e)))
+    }
+
+    fn predict_proba(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner
+            .predict_proba(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("GMM predict_proba failed: {}", e)))
+    }
+
+    fn predict_proba_bytes(&self, data: &[u8], n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .predict_proba(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("GMM predict_proba failed: {}", e)))
+    }
+
+    fn score(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<f32> {
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("GMM score failed: {}", e)))
+    }
+
+    fn score_bytes(&self, data: &[u8], n: usize, d: usize) -> PyResult<f32> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("GMM score failed: {}", e)))
+    }
+
+    #[getter]
+    fn weights(&self) -> Vec<f32> {
+        self.inner.weights().to_vec()
+    }
+
+    #[getter]
+    fn means(&self) -> Vec<f32> {
+        self.inner.means().to_vec()
+    }
+
+    #[getter]
+    fn covariances(&self) -> Vec<f32> {
+        self.inner.covariances().to_vec()
+    }
+
+    #[getter]
+    fn responsibilities(&self) -> Vec<f32> {
+        self.inner.responsibilities().to_vec()
+    }
+
+    #[getter]
+    fn lower_bound(&self) -> f32 {
+        self.inner.lower_bound()
+    }
+
+    #[getter]
+    fn n_iter(&self) -> usize {
+        self.inner.n_iter()
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, n, d, n_components=3, max_iterations=100, tolerance=1e-3, seed=42, reg_covar=1e-6))]
+pub fn metal_gmm_fit(
+    data: Vec<f32>,
+    n: usize,
+    d: usize,
+    n_components: usize,
+    max_iterations: usize,
+    tolerance: f32,
+    seed: u64,
+    reg_covar: f32,
+) -> PyResult<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, f32, usize)> {
+    let ctx = get_context()?;
+    let config = GMMConfig {
+        n_components,
+        max_iterations,
+        tolerance,
+        seed,
+        reg_covar,
+    };
+    let mut gmm = GMM::new(config);
+    gmm.fit(ctx, &data, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("GMM fit failed: {}", e)))?;
+    Ok((
+        gmm.weights().to_vec(),
+        gmm.means().to_vec(),
+        gmm.covariances().to_vec(),
+        gmm.responsibilities().to_vec(),
+        gmm.lower_bound(),
+        gmm.n_iter(),
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, n, d, n_components=3, max_iterations=100, tolerance=1e-3, seed=42, reg_covar=1e-6))]
+pub fn metal_gmm_fit_bytes(
+    data: &[u8],
+    n: usize,
+    d: usize,
+    n_components: usize,
+    max_iterations: usize,
+    tolerance: f32,
+    seed: u64,
+    reg_covar: f32,
+) -> PyResult<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, f32, usize)> {
+    let data = bytes_to_vec_f32(data, "data")?;
+    let ctx = get_context()?;
+    let config = GMMConfig {
+        n_components,
+        max_iterations,
+        tolerance,
+        seed,
+        reg_covar,
+    };
+    let mut gmm = GMM::new(config);
+    gmm.fit(ctx, &data, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("GMM fit failed: {}", e)))?;
+    Ok((
+        gmm.weights().to_vec(),
+        gmm.means().to_vec(),
+        gmm.covariances().to_vec(),
+        gmm.responsibilities().to_vec(),
+        gmm.lower_bound(),
+        gmm.n_iter(),
     ))
 }

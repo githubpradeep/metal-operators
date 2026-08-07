@@ -1,4 +1,5 @@
 use metal_operators::dbscan::{DBSCANConfig, DBSCAN};
+use metal_operators::gmm::{GMMConfig, GMM};
 use metal_operators::kmeans::{KMeans, KMeansConfig};
 use metal_operators::knn::{KNNConfig, KNN};
 use metal_operators::metal::MetalContext;
@@ -189,6 +190,68 @@ fn main() -> anyhow::Result<()> {
         let held = &v[..100 * d];
         let latent = nmf.transform(&ctx, held, 100, d)?;
         println!("Transformed (held-out) shape: 100 x {}", latent.len() / 100);
+    }
+
+    // ── GMM example ──
+    println!("\n=== GMM Example (three Gaussian blobs) ===");
+    {
+        let n = 600;
+        let d = 3;
+        let mut rng = fastrand::Rng::with_seed(7);
+        let mut data = vec![0.0f32; n * d];
+        for i in 0..n {
+            let c = i / 200; // blob 0, 1, 2
+            for dim in 0..d {
+                let center = if dim == c { 6.0 } else { 0.0 };
+                data[i * d + dim] = center + (rng.f32() - 0.5) * 1.2;
+            }
+        }
+
+        let mut gmm = GMM::new(GMMConfig {
+            n_components: 3,
+            max_iterations: 100,
+            tolerance: 1e-4,
+            seed: 42,
+            reg_covar: 1e-4,
+        });
+        gmm.fit(&ctx, &data, n, d)?;
+        println!(
+            "Lower bound (avg log-likelihood): {:.4} after {} iterations",
+            gmm.lower_bound(),
+            gmm.n_iter()
+        );
+        println!("Weights: {:?}", gmm.weights());
+        for c in 0..3 {
+            let m = &gmm.means()[c * d..(c + 1) * d];
+            println!(
+                "  Component {} mean: ({:.3}, {:.3}, {:.3})",
+                c, m[0], m[1], m[2]
+            );
+        }
+
+        let preds = gmm.predict(&ctx, &data, n, d)?;
+        // Best-over-permutation purity: GMM component labeling is arbitrary.
+        let mut purity = 0.0f32;
+        for a in 0..3 {
+            for b in 0..3 {
+                if b == a {
+                    continue;
+                }
+                for c2 in 0..3 {
+                    if c2 == a || c2 == b {
+                        continue;
+                    }
+                    let perm = [a, b, c2];
+                    let matches = (0..n).filter(|&i| preds[i] == perm[i / 200]).count() as f32;
+                    purity = purity.max(matches / n as f32);
+                }
+            }
+        }
+        println!("Cluster purity on training data: {:.3}", purity);
+        println!(
+            "Score on training data: {:.4}",
+            gmm.score(&ctx, &data, n, d)?
+        );
     }
 
     Ok(())
