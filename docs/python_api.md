@@ -576,3 +576,83 @@ ll = gmm.score(new_data)             # average log-likelihood
 `predict` / `predict_proba` / `score` are each a single GPU launch; `fit` runs
 one GPU launch per EM iteration (the E-step) with the M-step on the host —
 typically 2–30 iterations for well-behaved problems.
+
+## SVC API
+
+The `metal_svm` package provides GPU-accelerated Support Vector Classification
+(`sklearn.svm.SVC`-style). The full `n×n` kernel (Gram) matrix and the decision
+matrix are computed on the GPU (`svm_kernel` / `svm_predict` in
+`shaders/svm.metal`); the per-iteration dual (α) updates run on the host as a
+simplified Platt SMO that reads the precomputed Gram — so the GPU does the
+O(n²·d) kernel work exactly once, shared by every one-vs-rest classifier.
+
+### Functional API: `metal_svc`
+
+```python
+from metal_svm import metal_svc
+
+classes, intercept_, dual_coef_, support_vectors_, support_count, gamma_, n_iter = (
+    metal_svc(X, y, n, d, kernel="rbf", gamma=0.5, c=10.0,
+              max_iter=200, tolerance=1e-4, seed=42)
+)
+```
+
+Returns:
+
+- `classes` — `(k,)` unique class labels, float32
+- `intercept_` — `(k,)` per-classifier intercept `b`, float32
+- `dual_coef_` — `(ns,)` pooled `α·y` duals, float32
+- `support_vectors_` — `(ns, d)` pooled support vectors, float32
+- `support_count` — total support vectors across all classifiers (int)
+- `gamma_` — resolved kernel width (float)
+- `n_iter` — `(k,)` SMO passes per classifier
+
+A `metal_svc_fit_bytes` variant accepts `memoryview`/`bytes` buffers. The
+functional API does not retain the fitted model; use `MetalSVC` for
+`predict` / `decision_function` / `score`.
+
+### `MetalSVC` (sklearn-style class)
+
+```python
+from metal_svm import MetalSVC
+
+clf = MetalSVC(kernel="rbf", gamma=0.5, c=10.0, degree=3.0, coef0=0.0,
+               tolerance=1e-3, max_iter=200, seed=42)
+clf.fit(X, y)                  # infers (n, d) from the array shape
+preds = clf.predict(new_X)     # (n,) hard labels
+dec = clf.decision_function(new_X)  # (n, k) raw scores (or (n,) for binary)
+acc = clf.score(X_test, y_test)
+```
+
+`gamma <= 0` selects the automatic default `1 / n_features` (the
+`1/n_features` fallback of sklearn's `gamma="scale"`). Kernels: `"linear"`,
+`"poly"` (uses `degree`), `"rbf"` (default), `"sigmoid"` (uses `coef0`).
+
+#### Methods
+
+- `fit(data, y, n=None, d=None) -> MetalSVC` — fit with the GPU Gram matrix
+  + host SMO; infers `(n, d)` from shape.
+- `predict(data, n=None, d=None) -> np.ndarray[intp]` — hard labels (sign for
+  binary, argmax over the one-vs-rest scores otherwise).
+- `decision_function(data, n=None, d=None) -> np.ndarray[float32]` — raw
+  scores `(n, k)`; the single column for a binary classifier.
+- `score(data, y, n=None, d=None) -> float` — mean accuracy.
+
+#### Properties
+
+- `classes_` — `(k,)` unique class labels.
+- `intercept_` — `(k,)` per-classifier intercept `b`.
+- `n_support_` — `(k,)` support-vector count per classifier.
+- `support_vectors_` — `(ns, d)` pooled support vectors.
+- `dual_coef_` — `(ns,)` pooled `α·y` dual coefficients.
+- `n_iter_` — `(k,)` SMO passes run per classifier.
+- `gamma_` — resolved kernel width used by `fit`.
+
+#### GPU breakdown
+
+`fit` runs exactly **one** kernel-matrix launch (the O(n²·d) Gram, reused by
+every one-vs-rest sub-problem) plus the host SMO loop; `predict` /
+`decision_function` / `score` are each a single `svm_predict` launch over the
+pooled support vectors. Note the SMO dual solve itself is host-side (O(n²) per
+pass), so this operator shines when the Gram or the decision matrix dominates
+— i.e. prediction / scoring on large test sets, and any kernel besides linear.

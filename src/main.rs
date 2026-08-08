@@ -5,6 +5,7 @@ use metal_operators::knn::{KNNConfig, KNN};
 use metal_operators::metal::MetalContext;
 use metal_operators::nmf::{NMFConfig, NMF};
 use metal_operators::pca::{PCAConfig, PCA};
+use metal_operators::svm::{SVCConfig, SVCKernel, SVC};
 
 fn main() -> anyhow::Result<()> {
     let ctx = MetalContext::new()?;
@@ -251,6 +252,60 @@ fn main() -> anyhow::Result<()> {
         println!(
             "Score on training data: {:.4}",
             gmm.score(&ctx, &data, n, d)?
+        );
+    }
+
+    // ── SVC example ──
+    println!("\n=== SVC Example (RBF on two moons) ===");
+    {
+        let n = 400;
+        let d = 2;
+        let mut rng = fastrand::Rng::with_seed(7);
+        let mut data = Vec::with_capacity(n * d);
+        let mut labels = Vec::with_capacity(n);
+        // Two interleaved arcs (a small "two moons" pattern) — linearly
+        // inseparable, so the RBF kernel is required to separate them.
+        for i in 0..n {
+            let c = (i as f32 / (n as f32 / 2.0)) as usize; // class 0 or 1
+            let t = rng.f32() * std::f32::consts::PI;
+            if c == 0 {
+                data.push(t * t.cos() + 0.0);
+                data.push(t * t.sin());
+            } else {
+                data.push(t * t.cos() + 2.0 - 0.5);
+                data.push(t * t.sin() * -1.0 + 0.5);
+            }
+            labels.push(c as f32);
+        }
+
+        let mut svc = SVC::new(SVCConfig {
+            kernel: SVCKernel::Rbf,
+            gamma: 0.5,
+            c: 10.0,
+            tolerance: 1e-4,
+            max_iter: 300,
+            seed: 42,
+            ..Default::default()
+        });
+        svc.fit(&ctx, &data, &labels, n, d)?;
+
+        let preds = svc.predict(&ctx, &data, n, d)?;
+        let correct = (0..n)
+            .filter(|&i| preds[i] as usize == labels[i] as usize)
+            .count();
+        println!("Classes: {:?}", svc.classes());
+        println!("RBF gamma resolved: {:.3}", svc.gamma());
+        println!("Support vectors (pooled): {}", svc.support_count());
+        println!(
+            "Per-class SMO passes: {:?}, intercept: {:?}",
+            svc.n_iter(),
+            svc.intercept()
+        );
+        println!(
+            "Training accuracy: {:.3} ({} / {})",
+            correct as f32 / n as f32,
+            correct,
+            n
         );
     }
 

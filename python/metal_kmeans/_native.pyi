@@ -251,3 +251,68 @@ def metal_logistic_regression_fit_bytes(
     tol: float = 1e-4,
     seed: int = 42,
 ) -> Tuple[List[float], float, int, float]: ...
+
+class MetalSVC:
+    def __init__(
+        self,
+        kernel: str = "rbf",
+        gamma: float = 0.0,
+        degree: float = 3.0,
+        coef0: float = 0.0,
+        c: float = 1.0,
+        tolerance: float = 1e-3,
+        max_iter: int = 200,
+        seed: int = 42,
+    ) -> None: ...
+    def fit(self, data: List[float], y: List[float], n: int, d: int) -> None: ...
+    def predict(self, data: List[float], n: int, d: int) -> List[float]: ...
+    def decision_function(self, data: List[float], n: int, d: int) -> List[float]: ...
+    def score(self, data: List[float], y: List[float], n: int, d: int) -> float: ...
+    def fit_bytes(self, data: bytes, y: bytes, n: int, d: int) -> None: ...
+    def predict_bytes(self, data: bytes, n: int, d: int) -> List[float]: ...
+    def decision_function_bytes(self, data: bytes, n: int, d: int) -> List[float]: ...
+    def score_bytes(self, data: bytes, y: bytes, n: int, d: int) -> float: ...
+    @property
+    def classes(self) -> List[float]: ...
+    @property
+    def intercept_(self) -> List[float]: ...
+    @property
+    def n_support(self) -> List[int]: ...
+    @property
+    def dual_coef_(self) -> List[float]: ...
+    @property
+    def support_vectors_(self) -> List[float]: ...
+    @property
+    def gamma_(self) -> float: ...
+    @property
+    def n_iter(self) -> List[int]: ...
+
+def metal_svc_fit(
+    data: List[float],
+    y: List[float],
+    n: int,
+    d: int,
+    kernel: str = "linear",
+    gamma: float = 20.0,
+    degree: float = 3.0,
+    coef0: float = 0.0,
+    c: float = 1.0,
+    tolerance: float = 1e-4,
+    max_iter: int = 25,
+    seed: int = 42,
+) -> Tuple[List[float], List[float], List[float], List[float], int, float, List[int]]: ...
+
+def metal_svc_fit_bytes(
+    data: bytes,
+    y: bytes,
+    n: int,
+    d: int,
+    kernel: str = "linear",
+    gamma: float = 20.0,
+    degree: float = 3.0,
+    coef0: float = 0.0,
+    c: float = 1.0,
+    tolerance: float = 1e-4,
+    max_iter: int = 25,
+    seed: int = 42,
+) -> Tuple[List[float], List[float], List[float], List[float], int, float, List[int]]: ...

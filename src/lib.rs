@@ -9,6 +9,7 @@ pub mod metal;
 pub mod naive_bayes;
 pub mod nmf;
 pub mod pca;
+pub mod svm;
 pub mod tsne;
 
 #[cfg(feature = "python")]
@@ -43,6 +44,10 @@ pub use python::metal_nmf_fit_bytes;
 #[cfg(feature = "python")]
 pub use python::metal_pca_fit;
 #[cfg(feature = "python")]
+pub use python::metal_svc_fit;
+#[cfg(feature = "python")]
+pub use python::metal_svc_fit_bytes;
+#[cfg(feature = "python")]
 pub use python::metal_tsne_fit;
 #[cfg(feature = "python")]
 pub use python::metal_tsne_fit_bytes;
@@ -66,6 +71,8 @@ pub use python::PyMetalLogisticRegression;
 pub use python::PyMetalNMF;
 #[cfg(feature = "python")]
 pub use python::PyMetalPCA;
+#[cfg(feature = "python")]
+pub use python::PyMetalSVC;
 #[cfg(feature = "python")]
 pub use python::PyMetalTSNE;
 
@@ -91,6 +98,9 @@ mod py_bridge {
         m.add_class::<python::PyMetalPCA>()?;
         m.add_function(wrap_pyfunction!(python::metal_pca_fit, m)?)?;
         m.add_function(wrap_pyfunction!(python::metal_pca_fit_bytes, m)?)?;
+        m.add_class::<python::PyMetalSVC>()?;
+        m.add_function(wrap_pyfunction!(python::metal_svc_fit, m)?)?;
+        m.add_function(wrap_pyfunction!(python::metal_svc_fit_bytes, m)?)?;
         m.add_class::<python::PyMetalLogisticRegression>()?;
         m.add_function(wrap_pyfunction!(python::metal_logistic_regression_fit, m)?)?;
         m.add_function(wrap_pyfunction!(

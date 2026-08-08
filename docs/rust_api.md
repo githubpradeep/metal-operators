@@ -810,3 +810,83 @@ fn run() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+## `svm::SVCConfig`
+
+```rust
+pub struct SVCConfig {
+    pub kernel: SVCKernel,   // Linear | Poly | Rbf | Sigmoid (default Rbf)
+    pub gamma: f32,          // kernel width; <=0 selects auto 1 / n_features
+    pub degree: f32,         // poly only (default 3.0)
+    pub coef0: f32,          // poly / sigmoid independent term (default 0.0)
+    pub c: f32,              // regularization C > 0 (default 1.0)
+    pub tolerance: f32,      // SMO convergence tolerance (default 1e-3)
+    pub max_iter: usize,     // max SMO passes per classifier (default 200)
+    pub seed: u64,           // SMO index-sampling seed (reproducible)
+}
+```
+
+`SVCKernel` maps to ids shared with `shaders/svm.metal` (`SVC_LINEAR`,
+`SVC_POLY`, `SVC_RBF`, `SVC_SIGMOID`). The kernel function itself
+(linear / poly / rbf / sigmoid) is evaluated on the GPU in `svm_kern`.
+
+## `svm::SVC`
+
+Mirrors `sklearn.svm.SVC` (one-vs-rest, RBF by default). Training is two GPU
+launches + a host SMO loop; prediction is one GPU launch.
+
+- `SVC::fit(ctx, data, y, n, d) -> anyhow::Result<()>` — computes the full
+  `n×n` kernel (Gram) matrix `K[i][j] = κ(x_i, x_j)` in a single
+  `svm_kernel` GPU launch (reused verbatim by every one-vs-rest binary
+  sub-problem), then solves each binary dual with a simplified Platt SMO on
+  the host using `K` as the fast 2nd-order κ lookup.
+- `SVC::decision_function(ctx, data, n, d) -> anyhow::Result<Vec<f32>>` —
+  raw (m × k) decision scores `dec[m][cc] = b_cc + Σ α_s y_s κ(x_m, SV_s)`
+  over the pooled support vectors, one `svm_predict` GPU launch.
+- `SVC::predict(ctx, data, n, d) -> anyhow::Result<Vec<f32>>` — hard labels:
+  sign of the binary score for `k == 2`, else argmax over the one-vs-rest
+  classifiers.
+- `SVC::score(ctx, data, y, n, d) -> anyhow::Result<f32>` — prediction
+  accuracy.
+
+### Accessors
+
+| Method | Returns |
+|--------|---------|
+| `classes()` | unique class labels, `(k,)`, in appearance order |
+| `intercept()` | per-classifier intercept `b`, `(k,)` |
+| `n_support()` | support-vector count per classifier, `Vec<usize> (k,)` |
+| `support_count()` | total pooled support vectors (across all OVR classifiers) |
+| `support_vectors()` | flat pooled support vectors, `(ns × d)` |
+| `dual_coef()` | pooled `α·y` duals aligned to `support_vectors`, `(ns,)` |
+| `n_iter()` | SMO passes run per classifier, `(k,)` |
+| `gamma()` | resolved kernel width (concrete `1 / n_features` when auto) |
+| `n_classes() / n_features() / n_samples()` | shape accessors |
+
+### Example
+
+```rust ignore
+use metal_operators::metal::MetalContext;
+use metal_operators::svm::{SVC, SVCConfig, SVCKernel};
+
+fn run() -> anyhow::Result<()> {
+    let ctx = MetalContext::new()?;
+    // XOR-like 2-D pattern: separable in RBF space, not linearly.
+    let data = vec![0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0];
+    let labels = vec![0.0, 0.0, 1.0, 1.0];
+
+    let mut svc = SVC::new(SVCConfig {
+        kernel: SVCKernel::Rbf,
+        gamma: 0.5,
+        c: 100.0,
+        tolerance: 1e-6,
+        max_iter: 400,
+        seed: 3,
+        ..Default::default()
+    });
+    svc.fit(&ctx, &data, &labels, 4, 2)?;
+    let preds = svc.predict(&ctx, &data, 4, 2)?;
+    println!("predictions: {:?}", preds); // [0, 0, 1, 1]
+    Ok(())
+}
+```

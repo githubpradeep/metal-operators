@@ -9,6 +9,7 @@ use crate::metal::MetalContext;
 use crate::naive_bayes::{GaussianNB, GaussianNBConfig};
 use crate::nmf::{NMFConfig, NMF};
 use crate::pca::{PCAConfig, PCA};
+use crate::svm::{SVCConfig, SVCKernel, SVC};
 use crate::tsne::{TSNEConfig, TSNE};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -1688,5 +1689,254 @@ pub fn metal_gmm_fit_bytes(
         gmm.responsibilities().to_vec(),
         gmm.lower_bound(),
         gmm.n_iter(),
+    ))
+}
+
+// ── Support Vector Classifier (SVC) ────────────────────────────────────
+
+fn parse_kernel(kernel: &str) -> PyResult<SVCKernel> {
+    match kernel {
+        "linear" => Ok(SVCKernel::Linear),
+        "poly" => Ok(SVCKernel::Poly),
+        "rbf" => Ok(SVCKernel::Rbf),
+        "sigmoid" => Ok(SVCKernel::Sigmoid),
+        other => Err(PyValueError::new_err(format!(
+            "unknown kernel {:?}; expected linear|poly|rbf|sigmoid",
+            other
+        ))),
+    }
+}
+
+#[pyclass(name = "MetalSVC")]
+pub struct PyMetalSVC {
+    inner: SVC,
+}
+
+#[pymethods]
+impl PyMetalSVC {
+    #[new]
+    #[pyo3(signature = (kernel="rbf", gamma=0.0, degree=3.0, coef0=0.0, c=1.0, tolerance=1e-3, max_iter=200, seed=42))]
+    fn new(
+        kernel: &str,
+        gamma: f32,
+        degree: f32,
+        coef0: f32,
+        c: f32,
+        tolerance: f32,
+        max_iter: usize,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let config = SVCConfig {
+            kernel: parse_kernel(kernel)?,
+            gamma,
+            degree,
+            coef0,
+            c,
+            tolerance,
+            max_iter,
+            seed,
+        };
+        Ok(Self {
+            inner: SVC::new(config),
+        })
+    }
+
+    fn fit(&mut self, data: Vec<f32>, y: Vec<f32>, n: usize, d: usize) -> PyResult<()> {
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVM fit failed: {}", e)))
+    }
+
+    fn fit_bytes(&mut self, data: &[u8], y: &[u8], n: usize, d: usize) -> PyResult<()> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let y = bytes_to_vec_f32(y, "y")?;
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVM fit failed: {}", e)))
+    }
+
+    fn predict(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVM predict failed: {}", e)))
+    }
+
+    fn predict_bytes(&self, data: &[u8], n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVM predict failed: {}", e)))
+    }
+
+    fn decision_function(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner
+            .decision_function(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVM decision failed: {}", e)))
+    }
+
+    fn decision_function_bytes(&self, data: &[u8], n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .decision_function(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVM decision failed: {}", e)))
+    }
+
+    fn score(&self, data: Vec<f32>, y: Vec<f32>, n: usize, d: usize) -> PyResult<f32> {
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVM score failed: {}", e)))
+    }
+
+    fn score_bytes(&self, data: &[u8], y: &[u8], n: usize, d: usize) -> PyResult<f32> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let y = bytes_to_vec_f32(y, "y")?;
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVM score failed: {}", e)))
+    }
+
+    #[getter]
+    fn classes(&self) -> Vec<f32> {
+        self.inner.classes().to_vec()
+    }
+
+    #[getter]
+    fn intercept_(&self) -> Vec<f32> {
+        self.inner.intercept().to_vec()
+    }
+
+    #[getter]
+    fn n_support(&self) -> Vec<usize> {
+        self.inner.n_support()
+    }
+
+    #[getter]
+    fn dual_coef_(&self) -> Vec<f32> {
+        self.inner.dual_coef().to_vec()
+    }
+
+    #[getter]
+    fn support_vectors_(&self) -> Vec<f32> {
+        self.inner.support_vectors().to_vec()
+    }
+
+    #[getter]
+    fn gamma_(&self) -> f32 {
+        self.inner.gamma()
+    }
+
+    #[getter]
+    fn n_iter(&self) -> Vec<usize> {
+        self.inner.n_iter().to_vec()
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, y, n, d, kernel="linear", gamma=20.0, degree=3.0, coef0=0.0, c=1.0, tolerance=1e-4, max_iter=25, seed=42))]
+pub fn metal_svc_fit(
+    data: Vec<f32>,
+    y: Vec<f32>,
+    n: usize,
+    d: usize,
+    kernel: &str,
+    gamma: f32,
+    degree: f32,
+    coef0: f32,
+    c: f32,
+    tolerance: f32,
+    max_iter: usize,
+    seed: u64,
+) -> PyResult<(
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    usize,
+    f32,
+    Vec<usize>,
+)> {
+    let ctx = get_context()?;
+    let config = SVCConfig {
+        kernel: parse_kernel(kernel)?,
+        gamma,
+        degree,
+        coef0,
+        c,
+        tolerance,
+        max_iter,
+        seed,
+    };
+    let mut svc = SVC::new(config);
+    svc.fit(ctx, &data, &y, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("SVM fit failed: {}", e)))?;
+    let support_count = svc.support_count();
+    Ok((
+        svc.classes().to_vec(),
+        svc.intercept().to_vec(),
+        svc.dual_coef().to_vec(),
+        svc.support_vectors().to_vec(),
+        support_count,
+        svc.gamma(),
+        svc.n_iter().to_vec(),
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, y, n, d, kernel="linear", gamma=20.0, degree=3.0, coef0=0.0, c=1.0, tolerance=1e-4, max_iter=25, seed=42))]
+pub fn metal_svc_fit_bytes(
+    data: &[u8],
+    y: &[u8],
+    n: usize,
+    d: usize,
+    kernel: &str,
+    gamma: f32,
+    degree: f32,
+    coef0: f32,
+    c: f32,
+    tolerance: f32,
+    max_iter: usize,
+    seed: u64,
+) -> PyResult<(
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    usize,
+    f32,
+    Vec<usize>,
+)> {
+    let data = bytes_to_vec_f32(data, "data")?;
+    let y = bytes_to_vec_f32(y, "y")?;
+    let ctx = get_context()?;
+    let config = SVCConfig {
+        kernel: parse_kernel(kernel)?,
+        gamma,
+        degree,
+        coef0,
+        c,
+        tolerance,
+        max_iter,
+        seed,
+    };
+    let mut svc = SVC::new(config);
+    svc.fit(ctx, &data, &y, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("SVM fit failed: {}", e)))?;
+    let support_count = svc.support_count();
+    Ok((
+        svc.classes().to_vec(),
+        svc.intercept().to_vec(),
+        svc.dual_coef().to_vec(),
+        svc.support_vectors().to_vec(),
+        support_count,
+        svc.gamma(),
+        svc.n_iter().to_vec(),
     ))
 }

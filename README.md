@@ -1,6 +1,6 @@
 # metal-operators
 
-GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **LDA**, **Logistic Regression**, **Linear Regression**, **Gaussian Naive Bayes**, and **Gaussian Mixture Models (GMM)** via Apple Metal.
+GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **LDA**, **Logistic Regression**, **Linear Regression**, **Gaussian Naive Bayes**, **Gaussian Mixture Models (GMM)**, and **Support Vector Classification (SVC)** via Apple Metal.
 
 **KMeans** uses 5 kernel variants (simdgroup, split-D, tiled centroid) to run Lloyd's
 algorithm entirely on GPU — no CPU readback inside the loop.
@@ -78,6 +78,7 @@ python3 examples/diabetes_regression.py          # LinearRegression: real diabet
 python3 examples/lda_example.py                  # LDA: supervised dimensionality reduction
 python3 examples/tsne_example.py                 # t-SNE: nonlinear embedding (largest-lift)
 python3 examples/gmm_example.py                  # GMM: Gaussian mixture model (EM)
+python3 examples/svm_example.py                  # SVC: kernel matrix + host SMO classifier
 ```
 
 ### PCA
@@ -298,6 +299,38 @@ ll = gmm.score(X)           # average log-likelihood
 w, means, covs, resp, lb, iters = metal_gmm(X, *X.shape, n_components=3)
 ```
 
+### Support Vector Classification (SVC)
+
+`sklearn.svm.SVC`-semantics classifier (one-vs-rest, RBF by default). The full
+`n×n` kernel (Gram) matrix — the O(n²·d) term — is built in a single `svm_kernel`
+GPU launch and, being a function of the data alone, is reused verbatim by every
+one-vs-rest binary sub-problem. The per-iteration dual (α) updates run on the
+host as a simplified Platt SMO reading that Gram; `predict` / `decision_function`
+/ `score` are each a single `svm_predict` launch over the pooled support vectors.
+
+```python
+from metal_svm import MetalSVC
+import numpy as np
+
+# XOR (not linearly separable) — RBF kernel
+X = np.array([[0,0],[1,1],[0,1],[1,0]]).astype(np.float32)
+y = np.array([0,0,1,1]).astype(np.float32)
+
+# sklearn-style API
+clf = MetalSVC(kernel="rbf", gamma=0.5, c=100.0)
+clf.fit(X, y)
+preds = clf.predict(X)          # (n,) hard labels
+dec = clf.decision_function(X)  # (n, n_classes) raw scores
+acc = clf.score(X, y)
+
+# Functional API — (classes, intercept_, dual_coef_, support_vectors_,
+# support_count, gamma_, n_iter)
+from metal_svm import metal_svc
+classes, intercept, dual, sv, ns, g, iters = metal_svc(
+    X, y, *X.shape, kernel="rbf", gamma=0.5, c=100.0
+)
+```
+
 ## Requirements
 
 - macOS (Apple Silicon or AMD GPU with Metal support)
@@ -463,6 +496,20 @@ let proba = nb.predict_proba(&ctx, &data, n, d)?;    // (n, k) softmax rows
 let acc = nb.score(&ctx, &data, &y, n, d)?;          // mean accuracy
 ```
 
+```rust
+use metal_operators::svm::{SVC, SVCConfig, SVCKernel};
+
+let ctx = MetalContext::new()?;
+// XOR-like 2-D pattern: separable in RBF space, not linearly.
+let mut svc = SVC::new(SVCConfig {
+    kernel: SVCKernel::Rbf, gamma: 0.5, c: 100.0,
+    tolerance: 1e-6, max_iter: 400, seed: 3, ..Default::default()
+});
+svc.fit(&ctx, &data, &labels, 4, 2)?;
+let preds = svc.predict(&ctx, &data, 4, 2)?;   // one-vs-rest argmax / sign
+let dec = svc.decision_function(&ctx, &data, 4, 2)?; // raw (4, 2) scores
+```
+
 ## Tests
 
 ```sh
@@ -472,6 +519,7 @@ python3 examples/knn_example.py # Python KNN smoke test
 python3 examples/pca_eigenfaces.py # Python PCA eigenfaces example
 python3 examples/logistic_regression_example.py # Python LogisticRegression smoke test
 python3 examples/linear_regression_example.py   # Python LinearRegression smoke test
+python3 examples/svm_example.py                 # Python SVC smoke test
 ```
 
 KMeans test matrix: D = {2, 4, 8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 256}, including adjusted Rand index validation against CPU reference, multi-simdgroup correctness, split-D, empty-cluster handling, and timing.
@@ -483,6 +531,8 @@ PCA test matrix: 12 tests covering cov path (N≥D), Gram path (N<D), explained 
 Linear regression test matrix: 10 tests covering recovery of known coefficients, R² accuracy vs CPU reference, ridge shrinkage, no-intercept mode, singular data, determinism, and kernel dispatch sweep (D = {2, 3, 8, 16, 64, 128, 256}).
 
 Gaussian NB test matrix: CPU-reference validation of per-class means/variances from the GPU reduction pass (single-group, multi-group >128 samples, and 3-class), and classification accuracy + probability-normalization checks for the predict kernel.
+
+SVC test matrix: linear-kernel separable-blob accuracy + decision-matrix-argmax agreement, RBF nonlinear (XOR) separation, deterministic seed reproducibility, and invalid-input guards (not-fitted, single class, non-positive C).
 
 ## Benchmarks
 
