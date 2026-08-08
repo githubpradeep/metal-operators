@@ -75,7 +75,9 @@ pub struct SVRConfig {
     pub c: f32,
     /// ε-insensitive tube width: residuals within `eps` cost nothing (default 0.1).
     pub eps: f32,
-    /// SMO convergence tolerance (default 1e-3).
+    /// SMO convergence tolerance (kept for `sklearn.svm.SVR` API parity; the
+    /// pair-SMO below stops when a full pass makes no move, bounded by
+    /// `max_iter`, rather than applying a scalar violation threshold).
     pub tolerance: f32,
     /// Maximum number of SMO passes (default 200).
     pub max_iter: usize,
