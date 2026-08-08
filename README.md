@@ -1,6 +1,6 @@
 # metal-operators
 
-GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **LDA**, **Logistic Regression**, **Linear Regression**, **Gaussian Naive Bayes**, **Gaussian Mixture Models (GMM)**, and **Support Vector Classification (SVC)** via Apple Metal.
+GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **LDA**, **Logistic Regression**, **Linear Regression**, **Gaussian Naive Bayes**, **Gaussian Mixture Models (GMM)**, **Support Vector Classification (SVC)**, and **Support Vector Regression (SVR)** via Apple Metal.
 
 **KMeans** uses 5 kernel variants (simdgroup, split-D, tiled centroid) to run Lloyd's
 algorithm entirely on GPU — no CPU readback inside the loop.
@@ -79,6 +79,7 @@ python3 examples/lda_example.py                  # LDA: supervised dimensionalit
 python3 examples/tsne_example.py                 # t-SNE: nonlinear embedding (largest-lift)
 python3 examples/gmm_example.py                  # GMM: Gaussian mixture model (EM)
 python3 examples/svm_example.py                  # SVC: kernel matrix + host SMO classifier
+python3 examples/svr_example.py                  # SVR: kernel matrix + host ε-SMO regressor
 ```
 
 ### PCA
@@ -331,6 +332,36 @@ classes, intercept, dual, sv, ns, g, iters = metal_svc(
 )
 ```
 
+### Support Vector Regression (SVR)
+
+`sklearn.svm.SVR`-semantics regressor (ε-insensitive, RBF by default) — the
+regression sibling of SVC. It reuses the **exact same two shaders**: the full
+`n×n` kernel (Gram) matrix via `svm_kernel` in one GPU launch, and the
+regression outputs `f(x) = b + Σᵢ βᵢ·κ(x, xᵢ)` via `svm_predict` (a single
+classifier, so one launch). The host runs an ε-insensitive SMO over the dual
+coefficients `βᵢ = αᵢ⁺ - αᵢ⁻ ∈ [-C, C]` with `Σβ = 0` and the ε-tube penalty.
+
+```python
+from metal_svr import MetalSVR
+import numpy as np
+
+# Non-linear 1-D sinusoid — RBF kernel
+t = np.linspace(0, 6.28, 150).astype(np.float32)
+X = t.reshape(-1, 1)
+y = np.sin(t).astype(np.float32)
+
+# sklearn-style API
+clf = MetalSVR(kernel="rbf", gamma=0.6, c=5.0, eps=0.05)
+clf.fit(X, y)
+preds = clf.predict(X)          # (n,) regression values
+r2 = clf.score(X, y)            # R² coefficient of determination
+
+# Functional API — (support_vectors_, dual_coef_/β, intercept_,
+# support_count, gamma_, n_iter)
+from metal_svr import metal_svr
+sv, dual, b, ns, g, iters = metal_svr(X, y, *X.shape)
+```
+
 ## Requirements
 
 - macOS (Apple Silicon or AMD GPU with Metal support)
@@ -510,6 +541,22 @@ let preds = svc.predict(&ctx, &data, 4, 2)?;   // one-vs-rest argmax / sign
 let dec = svc.decision_function(&ctx, &data, 4, 2)?; // raw (4, 2) scores
 ```
 
+```rust
+use metal_operators::svr::{SVR, SVRConfig};
+use metal_operators::svm::SVCKernel;
+
+let ctx = MetalContext::new()?;
+// 1-D sinusoid — RBF kernel maps it to a straight tube.
+let mut svr = SVR::new(SVRConfig {
+    kernel: SVCKernel::Rbf, gamma: 0.6, c: 5.0, eps: 0.05,
+    max_iter: 300, seed: 42, ..Default::default()
+});
+svr.fit(&ctx, &data, &y, n, d)?;
+let preds = svr.predict(&ctx, &data, n, d)?;       // (n,) regression values
+let r2 = svr.score(&ctx, &data, &y, n, d)?;        // R² coefficient
+println!("support vectors: {}", svr.support_count());
+```
+
 ## Tests
 
 ```sh
@@ -520,6 +567,7 @@ python3 examples/pca_eigenfaces.py # Python PCA eigenfaces example
 python3 examples/logistic_regression_example.py # Python LogisticRegression smoke test
 python3 examples/linear_regression_example.py   # Python LinearRegression smoke test
 python3 examples/svm_example.py                 # Python SVC smoke test
+python3 examples/svr_example.py                 # Python SVR smoke test
 ```
 
 KMeans test matrix: D = {2, 4, 8, 16, 32, 64, 128}, K = {1, 8, 16, 32, 33, 64, 256}, including adjusted Rand index validation against CPU reference, multi-simdgroup correctness, split-D, empty-cluster handling, and timing.
@@ -533,6 +581,8 @@ Linear regression test matrix: 10 tests covering recovery of known coefficients,
 Gaussian NB test matrix: CPU-reference validation of per-class means/variances from the GPU reduction pass (single-group, multi-group >128 samples, and 3-class), and classification accuracy + probability-normalization checks for the predict kernel.
 
 SVC test matrix: linear-kernel separable-blob accuracy + decision-matrix-argmax agreement, RBF nonlinear (XOR) separation, deterministic seed reproducibility, and invalid-input guards (not-fitted, single class, non-positive C).
+
+SVR test matrix: linear-kernel recovery of a known affine target (R² ≥ 0.95), RBF fit of a 1-D sinusoid (R² ≥ 0.9) with bounded predictions, `predict`/`decision_function` equality, deterministic seed reproducibility, and invalid-input guards (length mismatch, non-positive C, negative eps).
 
 ## Benchmarks
 

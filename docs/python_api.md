@@ -656,3 +656,83 @@ every one-vs-rest sub-problem) plus the host SMO loop; `predict` /
 pooled support vectors. Note the SMO dual solve itself is host-side (O(n²) per
 pass), so this operator shines when the Gram or the decision matrix dominates
 — i.e. prediction / scoring on large test sets, and any kernel besides linear.
+
+## SVR API
+
+The `metal_svr` package provides GPU-accelerated Support Vector Regression
+(`sklearn.svm.SVR`-style, ε-insensitive loss). It reuses the **exact same two
+shaders** as SVC: `svm_kernel` builds the full `n×n` kernel (Gram) matrix in
+one GPU launch, and `svm_predict` computes the regression outputs
+`f(x) = b + Σᵢ βᵢ·κ(x, xᵢ)` over the pooled support vectors (a single
+classifier, so one launch). The host runs an ε-insensitive SMO on the dual
+coefficients `βᵢ = αᵢ⁺ - αᵢ⁻ ∈ [-C, C]` with `Σβ = 0` and the ε-tube penalty.
+
+### Functional API: `metal_svr`
+
+```python
+from metal_svr import metal_svr
+
+support_vectors_, dual_coef_, intercept_, support_count, gamma_, n_iter = (
+    metal_svr(X, y, n, d, kernel="rbf", gamma=0.6, c=5.0, eps=0.05,
+              max_iter=300, tolerance=1e-3, seed=42)
+)
+```
+
+Returns:
+
+- `support_vectors_` — `(ns, d)` pooled support vectors, float32
+- `dual_coef_` — `(ns,)` dual coefficients `β = α⁺ - α⁻`, float32
+- `intercept_` — regression intercept `b` (float)
+- `support_count` — number of support vectors (int)
+- `gamma_` — resolved kernel width (float)
+- `n_iter` — SMO passes run (int)
+
+A `metal_svr_fit_bytes` variant accepts `memoryview`/`bytes` buffers. The
+functional API does not retain the fitted model; use `MetalSVR` for
+`predict` / `decision_function` / `score`.
+
+### `MetalSVR` (sklearn-style class)
+
+```python
+from metal_svr import MetalSVR
+
+clf = MetalSVR(kernel="rbf", gamma=0.6, c=5.0, eps=0.05, degree=3.0, coef0=0.0,
+               tolerance=1e-3, max_iter=200, seed=42)
+clf.fit(X, y)                  # infers (n, d) from the array shape
+preds = clf.predict(new_X)     # (n,) regression values
+dec = clf.decision_function(new_X)  # identical to predict (single regressor)
+r2 = clf.score(X_test, y_test)
+```
+
+`gamma <= 0` selects the automatic default `1 / n_features` (the
+`1/n_features` fallback of sklearn's `gamma="scale"`). Kernels: `"linear"`,
+`"poly"` (uses `degree`), `"rbf"` (default), `"sigmoid"` (uses `coef0`).
+
+#### Methods
+
+- `fit(data, y, n=None, d=None) -> MetalSVR` — fit with the GPU Gram matrix
+  + host ε-SMO; infers `(n, d)` from shape.
+- `predict(data, n=None, d=None) -> np.ndarray[float32]` — regression values
+  `(n,)`.
+- `decision_function(data, n=None, d=None) -> np.ndarray[float32]` — same as
+  `predict` (SVR is a single real-valued regressor).
+- `score(data, y, n=None, d=None) -> float` — R² coefficient of
+  determination, `1 - SS_res / SS_tot` (clipped to 0).
+
+#### Properties
+
+- `support_vectors_` — `(ns, d)` pooled support vectors.
+- `dual_coef_` — `(ns,)` dual coefficients `β = α⁺ - α⁻`.
+- `intercept_` — regression intercept `b` (float).
+- `n_support_` — number of support vectors (int).
+- `n_iter_` — SMO passes run (int).
+- `gamma_` — resolved kernel width used by `fit`.
+
+#### GPU breakdown
+
+`fit` runs exactly **one** kernel-matrix launch (the O(n²·d) Gram — shared
+with SVC, which is why `metal_svm` and `metal_svr` compile the same two
+shaders) plus the host ε-SMO loop; `predict` / `decision_function` / `score`
+are each a single `svm_predict` launch over the pooled support vectors. As
+with SVC, the dual solve is host-side (O(n²) per pass), so prediction /
+scoring on large test sets is where the GPU work dominates.

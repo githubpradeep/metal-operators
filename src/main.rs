@@ -6,6 +6,7 @@ use metal_operators::metal::MetalContext;
 use metal_operators::nmf::{NMFConfig, NMF};
 use metal_operators::pca::{PCAConfig, PCA};
 use metal_operators::svm::{SVCConfig, SVCKernel, SVC};
+use metal_operators::svr::{SVRConfig, SVR};
 
 fn main() -> anyhow::Result<()> {
     let ctx = MetalContext::new()?;
@@ -307,6 +308,39 @@ fn main() -> anyhow::Result<()> {
             correct,
             n
         );
+    }
+
+    // ── SVR example ──
+    println!("\n=== SVR Example (1-D sine, RBF kernel) ===");
+    {
+        let n = 150;
+        let d = 1;
+        let mut rng = fastrand::Rng::with_seed(7);
+        let mut data = Vec::with_capacity(n * d);
+        let mut y = Vec::with_capacity(n);
+        for _ in 0..n {
+            let x = rng.f32() * 6.28f32;
+            data.push(x);
+            y.push(x.sin());
+        }
+
+        let mut svr = SVR::new(SVRConfig {
+            kernel: SVCKernel::Rbf,
+            gamma: 0.6,
+            c: 5.0,
+            eps: 0.05,
+            max_iter: 300,
+            seed: 42,
+            ..Default::default()
+        });
+        svr.fit(&ctx, &data, &y, n, d)?;
+
+        let r2 = svr.score(&ctx, &data, &y, n, d)?;
+        println!("Resolved RBF gamma: {:.3}", svr.gamma());
+        println!("Support vectors: {}", svr.support_count());
+        println!("Intercept: {:.4}", svr.intercept());
+        println!("SMO passes: {}", svr.n_iter());
+        println!("R² on training data: {:.4}", r2);
     }
 
     Ok(())

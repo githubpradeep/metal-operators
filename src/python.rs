@@ -10,6 +10,7 @@ use crate::naive_bayes::{GaussianNB, GaussianNBConfig};
 use crate::nmf::{NMFConfig, NMF};
 use crate::pca::{PCAConfig, PCA};
 use crate::svm::{SVCConfig, SVCKernel, SVC};
+use crate::svr::{SVRConfig, SVR};
 use crate::tsne::{TSNEConfig, TSNE};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -1938,5 +1939,230 @@ pub fn metal_svc_fit_bytes(
         support_count,
         svc.gamma(),
         svc.n_iter().to_vec(),
+    ))
+}
+
+// ── Support Vector Regressor (SVR) ───────────────────────────────────────
+
+#[pyclass(name = "MetalSVR")]
+pub struct PyMetalSVR {
+    inner: SVR,
+}
+
+#[pymethods]
+impl PyMetalSVR {
+    #[new]
+    #[pyo3(signature = (kernel="rbf", gamma=0.0, degree=3.0, coef0=0.0, c=1.0, eps=0.1, tolerance=1e-3, max_iter=200, seed=42))]
+    fn new(
+        kernel: &str,
+        gamma: f32,
+        degree: f32,
+        coef0: f32,
+        c: f32,
+        eps: f32,
+        tolerance: f32,
+        max_iter: usize,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let config = SVRConfig {
+            kernel: parse_kernel(kernel)?,
+            gamma,
+            degree,
+            coef0,
+            c,
+            eps,
+            tolerance,
+            max_iter,
+            seed,
+        };
+        Ok(Self {
+            inner: SVR::new(config),
+        })
+    }
+
+    fn fit(&mut self, data: Vec<f32>, y: Vec<f32>, n: usize, d: usize) -> PyResult<()> {
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVR fit failed: {}", e)))
+    }
+
+    fn fit_bytes(&mut self, data: &[u8], y: &[u8], n: usize, d: usize) -> PyResult<()> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let y = bytes_to_vec_f32(y, "y")?;
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVR fit failed: {}", e)))
+    }
+
+    fn predict(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVR predict failed: {}", e)))
+    }
+
+    fn predict_bytes(&self, data: &[u8], n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVR predict failed: {}", e)))
+    }
+
+    fn decision_function(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner
+            .decision_function(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVR predict failed: {}", e)))
+    }
+
+    fn decision_function_bytes(&self, data: &[u8], n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .decision_function(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVR predict failed: {}", e)))
+    }
+
+    fn score(&self, data: Vec<f32>, y: Vec<f32>, n: usize, d: usize) -> PyResult<f32> {
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVR score failed: {}", e)))
+    }
+
+    fn score_bytes(&self, data: &[u8], y: &[u8], n: usize, d: usize) -> PyResult<f32> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let y = bytes_to_vec_f32(y, "y")?;
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("SVR score failed: {}", e)))
+    }
+
+    /// Number of support vectors.
+    #[getter]
+    fn support_count(&self) -> usize {
+        self.inner.support_count()
+    }
+
+    /// Flattened pooled support vectors (ns × d, row-major).
+    #[getter]
+    fn support_vectors(&self) -> Vec<f32> {
+        self.inner.support_vectors().to_vec()
+    }
+
+    /// Pooled dual coefficients `β = α⁺ − α⁻` aligned to `support_vectors`.
+    #[getter]
+    fn dual_coef(&self) -> Vec<f32> {
+        self.inner.dual_coef().to_vec()
+    }
+
+    /// Regression intercept `b` (scalar).
+    #[getter]
+    fn intercept(&self) -> f32 {
+        self.inner.intercept()
+    }
+
+    /// Resolved kernel width.
+    #[getter]
+    fn gamma(&self) -> f32 {
+        self.inner.gamma()
+    }
+
+    /// SMO passes actually run.
+    #[getter]
+    fn n_iter(&self) -> usize {
+        self.inner.n_iter()
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, y, n, d, kernel="rbf", gamma=0.0, degree=3.0, coef0=0.0, c=1.0, eps=0.1, tolerance=1e-3, max_iter=200, seed=42))]
+pub fn metal_svr_fit(
+    data: Vec<f32>,
+    y: Vec<f32>,
+    n: usize,
+    d: usize,
+    kernel: &str,
+    gamma: f32,
+    degree: f32,
+    coef0: f32,
+    c: f32,
+    eps: f32,
+    tolerance: f32,
+    max_iter: usize,
+    seed: u64,
+) -> PyResult<(Vec<f32>, Vec<f32>, f32, usize, f32, usize)> {
+    let ctx = get_context()?;
+    let config = SVRConfig {
+        kernel: parse_kernel(kernel)?,
+        gamma,
+        degree,
+        coef0,
+        c,
+        eps,
+        tolerance,
+        max_iter,
+        seed,
+    };
+    let mut svr = SVR::new(config);
+    svr.fit(ctx, &data, &y, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("SVR fit failed: {}", e)))?;
+    let support_count = svr.support_count();
+    Ok((
+        svr.support_vectors().to_vec(),
+        svr.dual_coef().to_vec(),
+        svr.intercept(),
+        support_count,
+        svr.gamma(),
+        svr.n_iter(),
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, y, n, d, kernel="rbf", gamma=0.0, degree=3.0, coef0=0.0, c=1.0, eps=0.1, tolerance=1e-3, max_iter=200, seed=42))]
+pub fn metal_svr_fit_bytes(
+    data: &[u8],
+    y: &[u8],
+    n: usize,
+    d: usize,
+    kernel: &str,
+    gamma: f32,
+    degree: f32,
+    coef0: f32,
+    c: f32,
+    eps: f32,
+    tolerance: f32,
+    max_iter: usize,
+    seed: u64,
+) -> PyResult<(Vec<f32>, Vec<f32>, f32, usize, f32, usize)> {
+    let data = bytes_to_vec_f32(data, "data")?;
+    let y = bytes_to_vec_f32(y, "y")?;
+    let ctx = get_context()?;
+    let config = SVRConfig {
+        kernel: parse_kernel(kernel)?,
+        gamma,
+        degree,
+        coef0,
+        c,
+        eps,
+        tolerance,
+        max_iter,
+        seed,
+    };
+    let mut svr = SVR::new(config);
+    svr.fit(ctx, &data, &y, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("SVR fit failed: {}", e)))?;
+    let support_count = svr.support_count();
+    Ok((
+        svr.support_vectors().to_vec(),
+        svr.dual_coef().to_vec(),
+        svr.intercept(),
+        support_count,
+        svr.gamma(),
+        svr.n_iter(),
     ))
 }

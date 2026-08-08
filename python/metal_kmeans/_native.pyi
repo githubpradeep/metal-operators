@@ -302,6 +302,72 @@ def metal_svc_fit(
     seed: int = 42,
 ) -> Tuple[List[float], List[float], List[float], List[float], int, float, List[int]]: ...
 
+class MetalSVR:
+    def __init__(
+        self,
+        kernel: str = "rbf",
+        gamma: float = 0.0,
+        degree: float = 3.0,
+        coef0: float = 0.0,
+        c: float = 1.0,
+        eps: float = 0.1,
+        tolerance: float = 1e-3,
+        max_iter: int = 200,
+        seed: int = 42,
+    ) -> None: ...
+    def fit(self, data: List[float], y: List[float], n: int, d: int) -> None: ...
+    def predict(self, data: List[float], n: int, d: int) -> List[float]: ...
+    def decision_function(self, data: List[float], n: int, d: int) -> List[float]: ...
+    def score(self, data: List[float], y: List[float], n: int, d: int) -> float: ...
+    def fit_bytes(self, data: bytes, y: bytes, n: int, d: int) -> None: ...
+    def predict_bytes(self, data: bytes, n: int, d: int) -> List[float]: ...
+    def decision_function_bytes(self, data: bytes, n: int, d: int) -> List[float]: ...
+    def score_bytes(self, data: bytes, y: bytes, n: int, d: int) -> float: ...
+    @property
+    def support_count(self) -> int: ...
+    @property
+    def support_vectors(self) -> List[float]: ...
+    @property
+    def dual_coef(self) -> List[float]: ...
+    @property
+    def intercept(self) -> float: ...
+    @property
+    def gamma(self) -> float: ...
+    @property
+    def n_iter(self) -> int: ...
+
+def metal_svr_fit(
+    data: List[float],
+    y: List[float],
+    n: int,
+    d: int,
+    kernel: str = "rbf",
+    gamma: float = 0.0,
+    degree: float = 3.0,
+    coef0: float = 0.0,
+    c: float = 1.0,
+    eps: float = 0.1,
+    tolerance: float = 1e-3,
+    max_iter: int = 200,
+    seed: int = 42,
+) -> Tuple[List[float], List[float], float, int, float, int]: ...
+
+def metal_svr_fit_bytes(
+    data: bytes,
+    y: bytes,
+    n: int,
+    d: int,
+    kernel: str = "rbf",
+    gamma: float = 0.0,
+    degree: float = 3.0,
+    coef0: float = 0.0,
+    c: float = 1.0,
+    eps: float = 0.1,
+    tolerance: float = 1e-3,
+    max_iter: int = 200,
+    seed: int = 42,
+) -> Tuple[List[float], List[float], float, int, float, int]: ...
+
 def metal_svc_fit_bytes(
     data: bytes,
     y: bytes,

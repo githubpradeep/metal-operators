@@ -40,7 +40,7 @@ pub enum SVCKernel {
 }
 
 impl SVCKernel {
-    fn as_u32(self) -> u32 {
+    pub fn as_u32(self) -> u32 {
         match self {
             SVCKernel::Linear => 0,
             SVCKernel::Poly => 1,

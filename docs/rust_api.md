@@ -257,6 +257,81 @@ fn run() -> anyhow::Result<()> {
 }
 ```
 
+## `svr::SVRConfig`
+
+```rust
+pub struct SVRConfig {
+    pub kernel: SVCKernel,       // Linear | Poly | Rbf | Sigmoid (default Rbf)
+    pub gamma: f32,             // <= 0 → auto 1/n_features (default 0.0)
+    pub degree: f32,            // poly (default 3.0)
+    pub coef0: f32,             // poly / sigmoid (default 0.0)
+    pub c: f32,                 // regularization (default 1.0)
+    pub eps: f32,               // ε-tube width (default 0.1)
+    pub tolerance: f32,         // SMO convergence (default 1e-3)
+    pub max_iter: usize,        // SMO passes (default 200)
+    pub seed: u64,              // deterministic (default 42)
+}
+```
+
+`SVRConfig` reuses the same `kernel`/`gamma`/`degree`/`coef0` semantics (and
+the same `SVCKernel` type and `shaders/svm.metal` ids) as `SVCConfig`; the
+only SVR-specific addition is the ε-insensitive tube width `eps`.
+
+## `svr::SVR`
+
+Mirrors `sklearn.svm.SVR` (ε-insensitive loss, RBF by default). It is the
+regression sibling of `svm::SVC` and reuses the same two shaders:
+
+- `SVR::fit(ctx, data, y, n, d) -> anyhow::Result<()>` — computes the full
+  `n×n` kernel (Gram) matrix in **one** `svm_kernel` GPU launch (shared verbatim
+  with SVC), then solves the ε-insensitive dual `β_i = α_i⁺ - α_i⁻ ∈ [-C, C]`,
+  `Σβ = 0` with a host SMO that maximizes the two-variable restriction exactly
+  each iteration.
+- `SVR::decision_function(ctx, data, n, d) -> anyhow::Result<Vec<f32>>` —
+  regression values `f(x) = b + Σ β_s·κ(x, x_s)` over the pooled support
+  vectors; a single `svm_predict` GPU launch (K = 1, so length `n`).
+- `SVR::predict(ctx, data, n, d) -> anyhow::Result<Vec<f32>>` — identical to
+  `decision_function` (SVR is a single real-valued regressor).
+- `SVR::score(ctx, data, y, n, d) -> anyhow::Result<f32>` — R² coefficient of
+  determination `1 - SS_res / SS_tot` (clipped to 0).
+
+### Accessors
+
+- `gamma()` — resolved kernel width.
+- `intercept()` — regression intercept `b`.
+- `support_count()` — number of support vectors.
+- `support_vectors()` — pooled `(ns × d)` support vectors, row-major.
+- `dual_coef()` — pooled `β` aligned to `support_vectors()`.
+- `n_iter()` — SMO passes actually run.
+
+### Example
+
+```rust ignore
+use metal_operators::metal::MetalContext;
+use metal_operators::svm::SVCKernel;
+use metal_operators::svr::{SVR, SVRConfig};
+
+fn run() -> anyhow::Result<()> {
+    let ctx = MetalContext::new()?;
+    // 1-D sinusoid — RBF kernel maps it into a string tube.
+    let data: Vec<f32> = (0..150).map(|i| (i as f32 / 150.0) * 6.28).collect();
+    let y: Vec<f32> = data.iter().map(|x| x.sin()).collect();
+
+    let mut svr = SVR::new(SVRConfig {
+        kernel: SVCKernel::Rbf,
+        gamma: 0.6,
+        c: 5.0,
+        eps: 0.05,
+        max_iter: 300,
+        ..Default::default()
+    });
+    svr.fit(&ctx, &data, &y, 150, 1)?;
+    let r2 = svr.score(&ctx, &data, &y, 150, 1)?;
+    println!("R² on training data: {:.4}", r2);
+    Ok(())
+}
+```
+
 ---
 
 ## Feature flags
