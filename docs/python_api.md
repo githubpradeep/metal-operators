@@ -736,3 +736,34 @@ shaders) plus the host ε-SMO loop; `predict` / `decision_function` / `score`
 are each a single `svm_predict` launch over the pooled support vectors. As
 with SVC, the dual solve is host-side (O(n²) per pass), so prediction /
 scoring on large test sets is where the GPU work dominates.
+
+## Lasso API
+
+`metal_lasso` (functional) and `MetalLasso` (sklearn-style class), mirroring
+`sklearn.linear_model.Lasso`. Minimizes `0.5·‖Xw − y‖² + alpha·‖w‖₁`.
+
+### `metal_lasso(data, y, n, d, alpha=1.0, fit_intercept=True, max_iterations=1000, tol=1e-4, seed=42)`
+
+Returns `(weights, intercept, n_iter, converged, final_loss)`:
+
+- `weights` — `(d,)` float32 coefficient vector.
+- `intercept` — float intercept (0.0 when `fit_intercept=False`).
+- `n_iter` — coordinate-descent sweeps run.
+- `converged` — `bool`, whether the solver converged within `tol`.
+- `final_loss` — mean squared error on the training data.
+
+### `MetalLasso(alpha=1.0, fit_intercept=True, max_iterations=1000, tol=1e-4, seed=42)`
+
+sklearn-style class with `fit(data, y, n, d)`, `predict(data, n, d)`,
+`score(data, y, n, d)`, and properties `coef_`, `intercept_`, `weights`,
+`bias`, `n_iter`, `converged`, `final_loss`.
+
+Alias underscores mirror sklearn names (`coef_`, `intercept_`).
+
+#### GPU breakdown
+
+`fit` builds the augmented `(d+1)²` Gram system once on the GPU (the shared
+`linreg_gram_*` kernels), then runs host coordinate descent over the cached
+matrix — each sweep is O(d²), independent of the sample count `n`. Once the
+Gram is built, tuning `alpha` never re-reads the dataset. `predict` / `score`
+are each a single shared `linreg_predict` launch.

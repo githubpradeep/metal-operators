@@ -1,6 +1,6 @@
 # metal-operators
 
-GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **LDA**, **Logistic Regression**, **Linear Regression**, **Gaussian Naive Bayes**, **Gaussian Mixture Models (GMM)**, **Support Vector Classification (SVC)**, and **Support Vector Regression (SVR)** via Apple Metal.
+GPU-accelerated **KMeans clustering**, **K-Nearest Neighbors**, **PCA**, **LDA**, **Logistic Regression**, **Linear Regression**, **Lasso**, **Gaussian Naive Bayes**, **Gaussian Mixture Models (GMM)**, **Support Vector Classification (SVC)**, and **Support Vector Regression (SVR)** via Apple Metal.
 
 **KMeans** uses 5 kernel variants (simdgroup, split-D, tiled centroid) to run Lloyd's
 algorithm entirely on GPU — no CPU readback inside the loop.
@@ -74,6 +74,7 @@ python3 examples/customer_segmentation.py  # KMeans: 500K customer segmentation
 python3 examples/pca_eigenfaces.py         # PCA: eigenfaces reconstruction
 python3 examples/logistic_regression_example.py  # LogisticRegression: smoke test + benchmark
 python3 examples/linear_regression_example.py    # LinearRegression: smoke test + benchmark
+python3 examples/lasso_example.py                # Lasso: L1 CD smoke test + benchmark
 python3 examples/diabetes_regression.py          # LinearRegression: real diabetes data (442×10)
 python3 examples/lda_example.py                  # LDA: supervised dimensionality reduction
 python3 examples/tsne_example.py                 # t-SNE: nonlinear embedding (largest-lift)
@@ -230,6 +231,31 @@ r2 = reg.score(X, y, n, d)       # coefficient of determination (R²)
 `Ridge` convention); `fit_intercept=False` drops the bias column from the
 augmented system. `max_iterations`, `tol` and `seed` are accepted for API
 symmetry with flashlib but are unused by the closed-form solver.
+
+### Lasso
+
+`sklearn.linear_model.Lasso`-semantics L1-regularized regressor (minimizes
+`0.5·‖Xw − y‖² + alpha·‖w‖₁`). The heavy stage — building the augmented
+`(d+1)²` Gram system — runs **once** on the GPU via the shared `linreg_gram_*`
+kernels, then a **host coordinate-descent** (Gauss-Seidel) loop sweeps the
+cached Gram with soft-thresholding updates until convergence. Each sweep is
+O(d²), independent of the sample count `n`, so tuning `alpha` never re-reads
+the dataset. Config: `alpha`, `fit_intercept`, `tol`, `max_iterations`.
+
+```python
+from metal_lasso import MetalLasso, metal_lasso
+
+# sklearn-style API
+lasso = MetalLasso(alpha=0.1, fit_intercept=True)
+lasso.fit(X, y)                    # X flat (n,d) float32, y (n,)
+w = lasso.coef_                    # (d,) sparse coefficients
+b = lasso.intercept_               # float intercept
+preds = lasso.predict(X)           # (n,) predictions
+r2 = lasso.score(X, y)             # R²
+
+# Functional API — (weights, intercept, n_iter, converged, final_loss)
+weights, intercept, n_iter, converged, mse = metal_lasso(X, y, *X.shape, alpha=0.1)
+```
 
 ### Gaussian Naive Bayes
 

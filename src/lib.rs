@@ -2,6 +2,7 @@ pub mod dbscan;
 pub mod gmm;
 pub mod kmeans;
 pub mod knn;
+pub mod lasso;
 pub mod lda;
 pub mod linear_regression;
 pub mod logistic_regression;
@@ -30,6 +31,10 @@ pub use python::metal_gmm_fit_bytes;
 pub use python::metal_kmeans_fit;
 #[cfg(feature = "python")]
 pub use python::metal_kneighbors;
+#[cfg(feature = "python")]
+pub use python::metal_lasso_fit;
+#[cfg(feature = "python")]
+pub use python::metal_lasso_fit_bytes;
 #[cfg(feature = "python")]
 pub use python::metal_lda_fit;
 #[cfg(feature = "python")]
@@ -69,6 +74,8 @@ pub use python::PyMetalKNeighbors;
 #[cfg(feature = "python")]
 pub use python::PyMetalLDA;
 #[cfg(feature = "python")]
+pub use python::PyMetalLasso;
+#[cfg(feature = "python")]
 pub use python::PyMetalLinearRegression;
 #[cfg(feature = "python")]
 pub use python::PyMetalLogisticRegression;
@@ -99,6 +106,9 @@ mod py_bridge {
         m.add_class::<python::PyMetalKNeighbors>()?;
         m.add_function(wrap_pyfunction!(python::metal_kneighbors, m)?)?;
         m.add_function(wrap_pyfunction!(python::metal_kneighbors_bytes, m)?)?;
+        m.add_class::<python::PyMetalLasso>()?;
+        m.add_function(wrap_pyfunction!(python::metal_lasso_fit, m)?)?;
+        m.add_function(wrap_pyfunction!(python::metal_lasso_fit_bytes, m)?)?;
         m.add_class::<python::PyMetalLDA>()?;
         m.add_function(wrap_pyfunction!(python::metal_lda_fit, m)?)?;
         m.add_function(wrap_pyfunction!(python::metal_lda_fit_bytes, m)?)?;

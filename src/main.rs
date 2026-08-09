@@ -2,6 +2,7 @@ use metal_operators::dbscan::{DBSCANConfig, DBSCAN};
 use metal_operators::gmm::{GMMConfig, GMM};
 use metal_operators::kmeans::{KMeans, KMeansConfig};
 use metal_operators::knn::{KNNConfig, KNN};
+use metal_operators::lasso::{Lasso, LassoConfig};
 use metal_operators::metal::MetalContext;
 use metal_operators::nmf::{NMFConfig, NMF};
 use metal_operators::pca::{PCAConfig, PCA};
@@ -340,6 +341,56 @@ fn main() -> anyhow::Result<()> {
         println!("Support vectors: {}", svr.support_count());
         println!("Intercept: {:.4}", svr.intercept());
         println!("SMO passes: {}", svr.n_iter());
+        println!("R² on training data: {:.4}", r2);
+    }
+
+    // ── Lasso example ──
+    println!("\n=== Lasso Example (sparse synthetic regression) ===");
+    {
+        let n = 1000;
+        let d = 8;
+        let mut rng = fastrand::Rng::with_seed(11);
+        let mut data = Vec::with_capacity(n * d);
+        for _ in 0..n * d {
+            data.push(rng.f32() * 2.0 - 1.0);
+        }
+        // y = X·w_true + noise; only 3 of 8 features are informative.
+        let w_true = [1.2f32, -0.8, 0.0, 0.0, 0.6, 0.0, 0.0, -1.1];
+        let mut y = Vec::with_capacity(n);
+        for i in 0..n {
+            let row = &data[i * d..(i + 1) * d];
+            let mut s = 0.3
+                + row
+                    .iter()
+                    .zip(w_true.iter())
+                    .map(|(x, w)| x * w)
+                    .sum::<f32>();
+            s += (rng.f32() - 0.5) * 0.4;
+            y.push(s);
+        }
+
+        let mut lasso = Lasso::new(LassoConfig {
+            alpha: 0.1,
+            fit_intercept: true,
+            tol: 1e-5,
+            max_iterations: 2000,
+            seed: 42,
+        });
+        lasso.fit(&ctx, &data, &y, n, d)?;
+
+        let r2 = lasso.score(&ctx, &data, &y, n, d)?;
+        println!("CD sweeps: {}", lasso.n_iter);
+        println!("converged: {}", lasso.converged);
+        println!("intercept: {:.4}", lasso.bias);
+        println!(
+            "coef: {:?} (nonzero: {})",
+            lasso
+                .weights
+                .iter()
+                .map(|w| format!("{w:.3}"))
+                .collect::<Vec<_>>(),
+            lasso.weights.iter().filter(|w| **w != 0.0).count()
+        );
         println!("R² on training data: {:.4}", r2);
     }
 

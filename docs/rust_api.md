@@ -332,6 +332,67 @@ fn run() -> anyhow::Result<()> {
 }
 ```
 
+## `lasso::LassoConfig`
+
+```rust
+pub struct LassoConfig {
+    pub alpha: f32,            // L1 penalty strength (sklearn default 1.0)
+    pub fit_intercept: bool,   // fit an intercept (default true)
+    pub tol: f32,              // coordinate-descent tolerance (default 1e-4)
+    pub max_iterations: usize, // max CD sweeps (default 1000)
+    pub seed: u64,             // API symmetry; solver is deterministic
+}
+```
+
+`Default` = `{ alpha: 1.0, fit_intercept: true, tol: 1e-4, max_iterations: 1000, seed: 42 }`
+
+The model minimizes `0.5·‖Xw − y‖² + alpha·‖w‖₁` (intercept not penalized),
+matching sklearn's `Lasso` objective.
+
+## `lasso::Lasso`
+
+Lasso regression solved by **host coordinate descent over a GPU-built Gram**:
+
+1. **GPU** — the shared `linreg_gram_xtx_*` / `linreg_gram_xty` /
+   `linreg_reduce_gram` kernels (`shaders/linear.metal`) build the augmented
+   `(d+1)×(d+1)` Gram system `[XᵀX | Xᵀ·1; 1ᵀ·X | n]` and RHS `[Xᵀy; Σy]` in a
+   single command buffer.
+2. **Host** – Gauss–Seidel sweeps update each coefficient with the
+   soft-thresholding step `w_j = S(rho_j, alpha) / a[j][j]` until a full pass
+   changes nothing more than `tol`, or `max_iterations` sweeps elapse. Each
+   sweep is O(d²) over the cached Gram.
+3. **GPU** – the shared `linreg_predict` kernel returns `Xw + b`.
+
+### `Lasso::new(config: LassoConfig) -> Self`
+
+### `fit(&mut self, ctx: &MetalContext, data: &[f32], y: &[f32], n: usize, d: usize) -> anyhow::Result<()>`
+
+Fits the model. Populates `weights`, `bias`, `n_iter`, `converged` and
+`final_loss`.
+
+### `predict(&self, ctx: &MetalContext, data: &[f32], n: usize, d: usize) -> anyhow::Result<Vec<f32>>`
+
+### `score(&self, ctx: &MetalContext, data: &[f32], y: &[f32], n: usize, d: usize) -> anyhow::Result<f32>`
+
+### Accessors
+
+`weights(&self) -> &[f32]`, `coef(&self) -> &[f32]`, `bias(&self) -> f32`,
+`intercept(&self) -> f32`, `n_features(&self) -> usize`. Public fields
+`weights`, `bias`, `d`, `n_iter`, `converged`, `final_loss`.
+
+### Example
+
+```rust
+use metal_operators::lasso::{Lasso, LassoConfig};
+use metal_operators::metal::MetalContext;
+
+let ctx = MetalContext::new()?;
+let mut lasso = Lasso::new(LassoConfig { alpha: 0.1, ..Default::default() });
+lasso.fit(&ctx, &data, &y, n, d)?;
+let preds = lasso.predict(&ctx, &data, n, d)?;
+let r2 = lasso.score(&ctx, &data, &y, n, d)?;
+```
+
 ---
 
 ## Feature flags

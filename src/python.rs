@@ -2,6 +2,7 @@ use crate::dbscan::{DBSCANConfig, DBSCAN};
 use crate::gmm::{GMMConfig, GMM};
 use crate::kmeans::{KMeans, KMeansConfig};
 use crate::knn::{KNNConfig, KNN};
+use crate::lasso::{Lasso, LassoConfig};
 use crate::lda::{LDAConfig, LDA};
 use crate::linear_regression::{LinearRegression, LinearRegressionConfig};
 use crate::logistic_regression::{LogisticRegression, LogisticRegressionConfig};
@@ -1355,6 +1356,183 @@ pub fn metal_linear_regression_fit_bytes(
     lr.fit(ctx, &data, &y, n, d)
         .map_err(|e| PyRuntimeError::new_err(format!("LinearRegression fit failed: {}", e)))?;
     Ok((lr.weights().to_vec(), lr.bias(), lr.n_iter, lr.final_loss))
+}
+
+// ── Lasso ──────────────────────────────────────────────────────────────
+
+#[pyclass(name = "MetalLasso")]
+pub struct PyMetalLasso {
+    inner: Lasso,
+}
+
+#[pymethods]
+impl PyMetalLasso {
+    #[new]
+    #[pyo3(signature = (alpha=1.0, fit_intercept=true, max_iterations=1000, tol=1e-4, seed=42))]
+    fn new(alpha: f32, fit_intercept: bool, max_iterations: usize, tol: f32, seed: u64) -> Self {
+        let config = LassoConfig {
+            alpha,
+            fit_intercept,
+            max_iterations,
+            tol,
+            seed,
+        };
+        Self {
+            inner: Lasso::new(config),
+        }
+    }
+
+    fn fit(&mut self, data: Vec<f32>, y: Vec<f32>, n: usize, d: usize) -> PyResult<()> {
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("Lasso fit failed: {}", e)))
+    }
+
+    fn predict(&self, data: Vec<f32>, n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("Lasso predict failed: {}", e)))
+    }
+
+    fn score(&self, data: Vec<f32>, y: Vec<f32>, n: usize, d: usize) -> PyResult<f32> {
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("Lasso score failed: {}", e)))
+    }
+
+    fn fit_bytes(&mut self, data: &[u8], y: &[u8], n: usize, d: usize) -> PyResult<()> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let y = bytes_to_vec_f32(y, "y")?;
+        let ctx = get_context()?;
+        self.inner
+            .fit(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("Lasso fit failed: {}", e)))
+    }
+
+    fn predict_bytes(&self, data: &[u8], n: usize, d: usize) -> PyResult<Vec<f32>> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let ctx = get_context()?;
+        self.inner
+            .predict(ctx, &data, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("Lasso predict failed: {}", e)))
+    }
+
+    fn score_bytes(&self, data: &[u8], y: &[u8], n: usize, d: usize) -> PyResult<f32> {
+        let data = bytes_to_vec_f32(data, "data")?;
+        let y = bytes_to_vec_f32(y, "y")?;
+        let ctx = get_context()?;
+        self.inner
+            .score(ctx, &data, &y, n, d)
+            .map_err(|e| PyRuntimeError::new_err(format!("Lasso score failed: {}", e)))
+    }
+
+    #[getter]
+    fn weights(&self) -> Vec<f32> {
+        self.inner.weights().to_vec()
+    }
+
+    #[getter]
+    fn bias(&self) -> f32 {
+        self.inner.bias()
+    }
+
+    #[getter]
+    fn coef_(&self) -> Vec<f32> {
+        self.inner.weights().to_vec()
+    }
+
+    #[getter]
+    fn intercept_(&self) -> f32 {
+        self.inner.bias()
+    }
+
+    #[getter]
+    fn n_iter(&self) -> usize {
+        self.inner.n_iter
+    }
+
+    #[getter]
+    fn converged(&self) -> bool {
+        self.inner.converged
+    }
+
+    #[getter]
+    fn final_loss(&self) -> f32 {
+        self.inner.final_loss
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, y, n, d, alpha=1.0, fit_intercept=true, max_iterations=1000, tol=1e-4, seed=42))]
+pub fn metal_lasso_fit(
+    data: Vec<f32>,
+    y: Vec<f32>,
+    n: usize,
+    d: usize,
+    alpha: f32,
+    fit_intercept: bool,
+    max_iterations: usize,
+    tol: f32,
+    seed: u64,
+) -> PyResult<(Vec<f32>, f32, usize, bool, f32)> {
+    let ctx = get_context()?;
+    let config = LassoConfig {
+        alpha,
+        fit_intercept,
+        max_iterations,
+        tol,
+        seed,
+    };
+    let mut lasso = Lasso::new(config);
+    lasso
+        .fit(ctx, &data, &y, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("Lasso fit failed: {}", e)))?;
+    Ok((
+        lasso.weights().to_vec(),
+        lasso.bias(),
+        lasso.n_iter,
+        lasso.converged,
+        lasso.final_loss,
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, y, n, d, alpha=1.0, fit_intercept=true, max_iterations=1000, tol=1e-4, seed=42))]
+pub fn metal_lasso_fit_bytes(
+    data: &[u8],
+    y: &[u8],
+    n: usize,
+    d: usize,
+    alpha: f32,
+    fit_intercept: bool,
+    max_iterations: usize,
+    tol: f32,
+    seed: u64,
+) -> PyResult<(Vec<f32>, f32, usize, bool, f32)> {
+    let data = bytes_to_vec_f32(data, "data")?;
+    let y = bytes_to_vec_f32(y, "y")?;
+    let ctx = get_context()?;
+    let config = LassoConfig {
+        alpha,
+        fit_intercept,
+        max_iterations,
+        tol,
+        seed,
+    };
+    let mut lasso = Lasso::new(config);
+    lasso
+        .fit(ctx, &data, &y, n, d)
+        .map_err(|e| PyRuntimeError::new_err(format!("Lasso fit failed: {}", e)))?;
+    Ok((
+        lasso.weights().to_vec(),
+        lasso.bias(),
+        lasso.n_iter,
+        lasso.converged,
+        lasso.final_loss,
+    ))
 }
 
 // ── t-Distributed Stochastic Neighbor Embedding (t-SNE) ───────────
