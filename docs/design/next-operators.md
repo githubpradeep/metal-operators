@@ -88,6 +88,12 @@ highest confidence — each is ~1.0 implement bead):
 > Implement the immutable Gram/Xᵀy build **once** as shared helper so Ridge/Lasso/
 > ElasticNet reuse it via `pub(crate)`; keep `linreg` helper internal.
 
+**Wave progress:** ✅ **Lasso** shipped (bead b11, commit 5b1d54a) — `src/lasso/mod.rs`
+reuses the `linreg_gram_xtx/xty/reduce` kernels to build the augmented Gram once,
+then runs host coordinate descent; 6 real-Metal tests + Python `metal_lasso` package
+(class + functional API). ↻ Remaining wave members — Ridge, ElasticNet, SpectralClustering —
+are each ~1.0 follow-up implement bead.
+
 ## 5. Non-goals (this wave)
 
 - **Deep/neural** operators (MLP, Conv) — different kernel family, larger scope.
