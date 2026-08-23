@@ -86,6 +86,35 @@ def benchmark():
     print("  nonzero: {}/{}".format(np.count_nonzero(weights), d))
 
 
+def real_data_demo():
+    """Lasso as an automatic feature selector on UCI diabetes (442×10).
+
+    Sweeping alpha shows the classic L1 path: all features participate at
+    small alpha, then weak predictors get zeroed as regularization grows while
+    strong ones (BMI, s5 lipid profile) survive longest.
+    """
+    from sklearn.datasets import load_diabetes
+
+    ds = load_diabetes()
+    Xd = ds.data.astype(np.float32)
+    yd = ds.target.astype(np.float32)
+    n_d, d_d = Xd.shape
+
+    print("\n── Lasso feature selection on UCI diabetes ({}×{}) ──".format(n_d, d_d))
+    for alpha in (1.0, 10.0, 50.0, 100.0, 500.0):
+        las = MetalLasso(alpha=alpha, fit_intercept=True)
+        las.fit(Xd, yd, n_d, d_d)
+        coef = np.asarray(las.coef_)
+        kept = [ds.feature_names[i] for i in np.nonzero(coef)[0]]
+        r2 = las.score(Xd, yd, n_d, d_d)
+        print(
+            "  alpha={:<6} R²={:.3f}  nonzero={:2d}  kept: {}".format(
+                alpha, r2, len(kept), ", ".join(kept) or "(none)"
+            )
+        )
+
+
 if __name__ == "__main__":
     smoke_test()
     benchmark()
+    real_data_demo()

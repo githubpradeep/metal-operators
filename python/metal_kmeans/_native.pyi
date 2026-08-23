@@ -382,3 +382,63 @@ def metal_svc_fit_bytes(
     max_iter: int = 25,
     seed: int = 42,
 ) -> Tuple[List[float], List[float], List[float], List[float], int, float, List[int]]: ...
+
+class MetalDBSCAN:
+    def __init__(self, eps: float = 0.5, min_samples: int = 5) -> None: ...
+    def fit(self, data: List[float], n: int, d: int) -> None: ...
+    def fit_bytes(self, data: bytes, n: int, d: int) -> None: ...
+    @property
+    def labels(self) -> List[int]: ...
+    @property
+    def n_clusters(self) -> int: ...
+
+class MetalNMF:
+    def __init__(self, n_components: int = 2, max_iterations: int = 200, tolerance: float = 1e-4, seed: int = 42) -> None: ...
+    def fit(self, data: List[float], n: int, d: int) -> None: ...
+    def fit_bytes(self, data: bytes, n: int, d: int) -> None: ...
+    def transform(self, data: List[float], n: int, d: int) -> List[float]: ...
+    def transform_bytes(self, data: bytes, n: int, d: int) -> List[float]: ...
+    @property
+    def components(self) -> List[float]: ...
+    @property
+    def coeff(self) -> List[float]: ...
+    @property
+    def reconstruction_error(self) -> float: ...
+    @property
+    def n_iter(self) -> int: ...
+
+def metal_dbscan_fit(
+    data: List[float],
+    n: int,
+    d: int,
+    eps: float = 0.5,
+    min_samples: int = 5,
+) -> Tuple[List[int], int]: ...
+
+def metal_dbscan_fit_bytes(
+    data: bytes,
+    n: int,
+    d: int,
+    eps: float = 0.5,
+    min_samples: int = 5,
+) -> Tuple[List[int], int]: ...
+
+def metal_nmf_fit(
+    data: List[float],
+    n: int,
+    d: int,
+    n_components: int,
+    max_iterations: int = 200,
+    tolerance: float = 1e-4,
+    seed: int = 42,
+) -> Tuple[List[float], List[float], float, int]: ...
+
+def metal_nmf_fit_bytes(
+    data: bytes,
+    n: int,
+    d: int,
+    n_components: int,
+    max_iterations: int = 200,
+    tolerance: float = 1e-4,
+    seed: int = 42,
+) -> Tuple[List[float], List[float], float, int]: ...

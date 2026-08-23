@@ -173,6 +173,11 @@ impl LogisticRegression {
             n,
             y.len()
         );
+        anyhow::ensure!(
+            y.iter().all(|&v| v == 0.0 || v == 1.0),
+            "LogisticRegression requires binary labels in {{0.0, 1.0}}; \
+             got out-of-range label value(s) (multiclass is not supported)"
+        );
 
         self.d = d;
         self.weights = vec![0.0f32; d];

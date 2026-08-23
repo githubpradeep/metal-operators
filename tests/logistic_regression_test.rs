@@ -170,6 +170,16 @@ fn test_lr_rejects_invalid() {
     assert!(lr.fit(&ctx, &[1.0, 2.0, 3.0], &[0.0, 1.0], 2, 1).is_err());
     // Labels length mismatch
     assert!(lr.fit(&ctx, &[1.0, 2.0], &[0.0], 2, 1).is_err());
+    // Non-binary labels (multiclass) must be rejected, not silently mis-trained
+    assert!(
+        lr.fit(&ctx, &[1.0, 2.0, 3.0, 4.0], &[0.0, 1.0, 2.0], 3, 1)
+            .is_err(),
+        "multiclass labels should be rejected"
+    );
+    assert!(
+        lr.fit(&ctx, &[1.0, 2.0], &[-1.0, 1.0], 2, 1).is_err(),
+        "negative labels should be rejected"
+    );
 }
 
 #[test]

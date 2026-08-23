@@ -1,8 +1,9 @@
-"""LDA (Linear Discriminant Analysis) — smoke test + dimensionality reduction.
+"""LDA (Linear Discriminant Analysis) — smoke test + real-world demo.
 
 Demonstrates the Metal-accelerated :class:`~metal_lda.MetalLDA` operator on
-synthetic Gaussian classes: fit, project into the discriminant subspace, and
-measure classification accuracy via nearest projected class center.
+synthetic Gaussian classes, then on the UCI Iris and Wine datasets: fit,
+project into the discriminant subspace, and measure classification accuracy
+via nearest projected class center.
 
 Usage::
 
@@ -42,3 +43,27 @@ T = lda.transform(X)
 print("projected shape =", T.shape)
 
 print("ok: LDA works end-to-end")
+
+
+# ── Real data: UCI Iris & Wine ─────────────────────────────────────
+def real_data_demo(name, Xr, yr):
+    nr = Xr.shape[0]
+    k_real = len(set(yr.tolist()))
+
+    lda_r = MetalLDA(n_components=k_real - 1)  # max rank is C-1
+    lda_r.fit(Xr, yr.astype(float))
+    acc_r = lda_r.score(Xr, yr.astype(float))
+    print(
+        f"{name}: n={nr} d={Xr.shape[1]} classes={k_real} → "
+        f"project to {k_real - 1}D, train accuracy={acc_r:.4f}"
+    )
+    ev = np.asarray(lda_r.eigenvalues_)
+    print(f"  eigenvalues = {np.round(ev, 3)}  (between-class separation per axis)")
+
+
+from sklearn.datasets import load_iris, load_wine
+
+_iris = load_iris()
+_wine = load_wine()
+real_data_demo("Iris", _iris.data.astype(np.float32), _iris.target)
+real_data_demo("Wine", _wine.data.astype(np.float32), _wine.target)

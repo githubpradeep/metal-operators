@@ -1,9 +1,9 @@
-"""t-SNE (t-distributed Stochastic Neighbor Embedding) — smoke test + example.
+"""t-SNE (t-distributed Stochastic Neighbor Embedding) — smoke test + real-world demo.
 
 Demonstrates the Metal-accelerated :class:`~metal_tsne.MetalTSNE` operator on
-well-separated Gaussian blobs: fit the 2-D embedding, check that the blobs
-become clearly separated (nearest-neighbour purity in the embedding), and
-report the KL divergence.
+well-separated Gaussian blobs, then on the UCI digits dataset: fit the 2-D
+embedding, check that the classes become separated (nearest-neighbour purity
+in the embedding), and report the KL divergence.
 
 Usage::
 
@@ -40,3 +40,31 @@ print(f"nearest-neighbour purity   = {purity:.3f}")
 
 assert purity > 0.9, "t-SNE failed to separate the blobs"
 print("ok: t-SNE works end-to-end")
+
+# ── Real data: UCI digits 64-D → 2-D map ─────────────────────────────
+from sklearn.datasets import load_digits
+
+
+def nn_purity(Y2, labels):
+    D = ((Y2[:, None, :] - Y2[None, :, :]) ** 2).sum(-1)
+    np.fill_diagonal(D, np.inf)
+    return float(np.mean(labels[np.argmin(D, axis=1)] == labels))
+
+
+digits = load_digits()
+Xd = digits.data.astype(np.float32)
+yd = digits.target
+# Subsample to keep the demo quick; full 1797 also works.
+idx = np.concatenate([np.where(yd == c)[0][:90] for c in range(10)])
+Xd, yd_s = Xd[idx], yd[idx]
+
+print(f"\n── t-SNE on UCI digits ({len(Xd)} samples × {Xd.shape[1]} pixels → 2D) ──")
+tsne_d = MetalTSNE(n_components=2, perplexity=30.0, learning_rate=200.0, n_iter=750, seed=42)
+Yd = tsne_d.fit_transform(Xd)
+print(f"embedding shape = {Yd.shape}")
+print(f"iterations run  = {tsne_d.n_iter_}")
+print(f"final KL(P||Q)  = {tsne_d.kl_divergence_:.3f}")
+pur_d = nn_purity(np.asarray(Yd), yd_s)
+print(f"nearest-neighbour purity = {pur_d:.3f}  (10 digit classes; random ≈ 0.10)")
+assert pur_d > 0.6, "digits embedding did not preserve local class structure"
+print("ok: t-SNE maps 64-D digit images to a coherent 2-D layout")

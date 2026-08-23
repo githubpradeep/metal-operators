@@ -3,7 +3,8 @@
 Trains an scikit-learn-compatible SVC whose kernel (Gram) matrix and decision
 matrix are computed on the Apple Metal GPU, with the dual (α) updates solved on
 the host by a simplified Platt SMO. Shows training on a non-linearly separable
-two-moon problem with an RBF kernel and on separable blobs with a linear kernel.
+two-moon problem with an RBF kernel, separable blobs with a linear kernel, and
+real-world malignancy classification on the UCI breast-cancer dataset.
 """
 
 import numpy as np
@@ -57,3 +58,22 @@ print("\nfunctional API:")
 print("  classes:", classes, " gamma_:", g, " support_count:", ns)
 print("  support_vectors shape:", sv.shape, " dual_coef shape:", dual.shape)
 print("  n_iter_:", iters)
+
+# ── Real data: UCI breast cancer (malignant vs benign) ──────────────
+from sklearn.datasets import load_breast_cancer
+from sklearn.model_selection import train_test_split
+
+bc = load_breast_cancer()
+Xc = ((bc.data - bc.data.mean(0)) / bc.data.std(0)).astype(np.float32)
+yc = bc.target.astype(np.float32)
+Xtr, Xte, ytr, yte = train_test_split(
+    Xc, yc, test_size=0.25, random_state=42, stratify=yc
+)
+
+print(f"\n── SVC on UCI breast cancer ({Xtr.shape[0]} train / {Xte.shape[0]} test × {Xc.shape[1]} features) ──")
+for kern in ("linear", "rbf"):
+    clf_r = MetalSVC(kernel=kern, c=1.0, tolerance=1e-4, max_iter=300, seed=42)
+    clf_r.fit(Xtr, ytr)
+    tr_acc = float(clf_r.score(Xtr, ytr, *Xtr.shape))
+    te_acc = float(np.mean(np.asarray(clf_r.predict(Xte)) == yte))
+    print(f"  {kern:6s} kernel: train={tr_acc:.4f}  test={te_acc:.4f}  n_support_={clf_r.n_support_}")

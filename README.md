@@ -74,13 +74,15 @@ python3 examples/customer_segmentation.py  # KMeans: 500K customer segmentation
 python3 examples/pca_eigenfaces.py         # PCA: eigenfaces reconstruction
 python3 examples/logistic_regression_example.py  # LogisticRegression: smoke test + benchmark
 python3 examples/linear_regression_example.py    # LinearRegression: smoke test + benchmark
-python3 examples/lasso_example.py                # Lasso: L1 CD smoke test + benchmark
+python3 examples/lasso_example.py                # Lasso: L1 CD smoke test + diabetes feature selection
 python3 examples/diabetes_regression.py          # LinearRegression: real diabetes data (442×10)
-python3 examples/lda_example.py                  # LDA: supervised dimensionality reduction
-python3 examples/tsne_example.py                 # t-SNE: nonlinear embedding (largest-lift)
-python3 examples/gmm_example.py                  # GMM: Gaussian mixture model (EM)
-python3 examples/svm_example.py                  # SVC: kernel matrix + host SMO classifier
-python3 examples/svr_example.py                  # SVR: kernel matrix + host ε-SMO regressor
+python3 examples/lda_example.py                  # LDA: supervised dim. reduction (Iris + Wine)
+python3 examples/tsne_example.py                 # t-SNE: nonlinear embedding (digits → 2D map, 97.8% NN purity)
+python3 examples/gmm_example.py                  # GMM: EM + BIC model selection on Wine (matches sklearn)
+python3 examples/svm_example.py                  # SVC: kernels + breast-cancer classification (98.6% test)
+python3 examples/svr_example.py                  # SVR: kernels + diabetes progression regression
+python3 examples/dbscan_wine_clusters.py         # DBSCAN: density clustering + outlier screen on Wine
+python3 examples/nmf_digit_parts.py              # NMF: parts-based stroke decomposition of digits
 ```
 
 ### PCA

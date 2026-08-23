@@ -3,7 +3,8 @@
 Trains an scikit-learn-compatible SVR whose kernel (Gram) matrix and decision
 outputs are computed on the Apple Metal GPU, with the dual (β) updates solved
 on the host by an ε-insensitive SMO. Shows fitting a non-linear 1-D sinusoid
-(RBF kernel), a 2-D quadratic surface (poly kernel), and a linear trend.
+(RBF kernel), a 2-D quadratic surface (poly kernel), a linear trend, and
+real-world disease-progression regression on the UCI diabetes dataset.
 """
 
 import numpy as np
@@ -62,3 +63,27 @@ print("\nfunctional API:")
 print("  support_vectors shape:", sv.shape, "  dual_coef shape:", dual.shape)
 print("  intercept_: %.4f  support_count: %d  gamma_: %.3f  n_iter_: %d"
       % (b, ns, g, iters))
+
+# ── Real data: UCI diabetes progression (442 patients × 10 features) ──
+from sklearn.datasets import load_diabetes
+from sklearn.model_selection import train_test_split
+
+Xdb = load_diabetes().data.astype(np.float32)
+ydb = load_diabetes().target.astype(np.float32)
+Xtr, Xte, ytr, yte = train_test_split(
+    Xdb, ydb, test_size=0.25, random_state=42
+)
+# Standardize targets so eps/C are scale-free; invert for R².
+m, s = float(ytr.mean()), float(ytr.std())
+ytr_s = ((ytr - m) / s).astype(np.float32)
+
+svr_r = MetalSVR(kernel="rbf", c=10.0, eps=0.05, max_iter=500, seed=42)
+svr_r.fit(Xtr, ytr_s)
+pred = np.asarray(svr_r.predict(Xte)) * s + m  # de-standardize
+ss_res = float(((pred - yte) ** 2).sum())
+ss_tot = float(((yte - yte.mean()) ** 2).sum())
+r2_test = 1.0 - ss_res / ss_tot
+r2_train = float(svr_r.score(Xtr, ytr_s))
+print(f"\n── SVR on UCI diabetes ({Xtr.shape[0]} train / {Xte.shape[0]} test × {Xdb.shape[1]} features) ──")
+print("  RBF kernel: R²(train)=%.4f  R²(test)=%.4f  n_support_=%d/%d" % (
+      r2_train, r2_test, svr_r.n_support_, Xtr.shape[0]))

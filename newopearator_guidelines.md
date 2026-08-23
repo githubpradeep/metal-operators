@@ -461,7 +461,7 @@ if __name__ == "__main__":
 ## Phase 8: Build & Test
 
 ```bash
-# Build with Python bindings
+# Build with Python bindings (library check only; see note below)
 cargo build --features python
 
 # Run tests
@@ -474,6 +474,19 @@ cargo bench
 cd examples
 python3 your_operator_example.py
 ```
+
+> **Note on `cargo build --features python`:** because the crate uses the
+> `pyo3/extension-module` feature, Python symbols are resolved at import time
+> inside the interpreter, not at link time. A plain `cargo build --features python`
+> may fail at the *linking* step (`cc` / undefined symbols for arm64) — this is
+> expected and does NOT indicate a code error. To build and install the Python
+> extension, always use maturin:
+>
+> ```bash
+> pip install maturin
+> source .venv/bin/activate
+> maturin develop          # builds wheel + installs into the venv
+> ```
 
 ## Common Pitfalls & Solutions
 
@@ -504,8 +517,10 @@ python3 your_operator_example.py
 
 ## Validation Checklist
 
-- [ ] Code compiles with `cargo build --features python`
-- [ ] All unit tests pass
+- [ ] Library compiles: `cargo build`
+- [ ] All unit tests pass: `cargo test`
+- [ ] Performance benchmarks work: `cargo bench`
+- [ ] Python bindings build & import: `maturin develop`, then `python3 -c "import metal_kmeans"`
 - [ ] Performance benchmarks work
 - [ ] Python bindings import correctly
 - [ ] Example script runs successfully
